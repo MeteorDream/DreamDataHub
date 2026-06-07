@@ -5,3 +5,86 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
+
+[dependency-groups]
+dev = [
+    "black>=26.3.1",
+    "isort>=8.0.1",
+    "pytest>=9.0.3",
+    "ruff>=0.15.12",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["app"]
+testpaths = ["test"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["app"]
+extend-exclude = ["reference", ".venv", "build", "dist"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "B",     # flake8-bugbear
+    "UP",    # pyupgrade
+    "SIM",   # flake8-simplify
+    "RUF",   # ruff-specific rules
+    # Async correctness — async-first FastAPI/Redis/OpenAI streaming service
+    "ASYNC", # flake8-async (blocking calls in async funcs, missing awaits, etc.)
+    # Logging hygiene — heavy stdlib-logging usage across controllers/tasks
+    "LOG",   # flake8-logging
+    "G",     # flake8-logging-format (no f-strings / % in logger calls)
+    # Timezone safety — pytz / python-dateutil are deps; naive datetimes are bugs
+    "DTZ",   # flake8-datetimez
+    # Quality / readability
+    "C4",    # flake8-comprehensions
+    "PIE",   # flake8-pie
+    "RET",   # flake8-return
+    "PT",    # flake8-pytest-style
+    "PTH",   # flake8-use-pathlib
+    "TID",   # flake8-tidy-imports
+    "PERF",  # perflint
+    "T20",   # flake8-print — stray print()s should be logger calls in a service
+    # Security — service handles auth, JWT (jwcrypto), encryption (pycryptodome)
+    "S",     # flake8-bandit
+]
+ignore = [
+    "E501",    # line-too-long — the formatter owns line length
+    # Bandit false-positives that recur in this codebase
+    "S101",    # assert — used for invariants; tests are exempted below as well
+    "S104",    # bind-all-interfaces — uvicorn intentionally listens on 0.0.0.0
+    "S311",    # std random — most call sites here are not crypto-sensitive
+    # Streaming consumer loops legitimately need try/except inside the loop
+    "PERF203",
+    # Chinese characters are intentional throughout (prompts, error messages, comments)
+    "RUF001",  # ambiguous-unicode-character-string
+    "RUF002",  # ambiguous-unicode-character-docstring
+    "RUF003",  # ambiguous-unicode-character-comment
+]
+
+[tool.ruff.lint.per-file-ignores]
+"test/**" = [
+    "B",   # pytest fixtures trip B008/B017 frequently
+    "S",   # asserts and hardcoded fixtures are expected in tests
+    "T20", # print() is fine while debugging tests
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+combine-as-imports = true
+
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false
+mark-parentheses = false
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+docstring-code-format = true
+docstring-code-line-length = 80
