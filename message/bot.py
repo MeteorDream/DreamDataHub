@@ -1,12 +1,35 @@
 from __future__ import annotations
 
-import logging
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-logger = logging.getLogger(__name__)
+__all__ = [
+    "AtSegment",
+    "AudioSegment",
+    "BotEvent",
+    "BotMessageType",
+    "BotSegment",
+    "ContactSegment",
+    "FaceSegment",
+    "FileSegment",
+    "ForwardSegment",
+    "ImageSegment",
+    "JsonSegment",
+    "LocationSegment",
+    "MusicSegment",
+    "NodeSegment",
+    "NodesSegment",
+    "PlainSegment",
+    "PokeSegment",
+    "ReplySegment",
+    "SegmentAdapter",
+    "ShareSegment",
+    "UnknownSegment",
+    "VideoSegment",
+]
+
 
 class BotMessageType(StrEnum):
     # Basic Segment Types
@@ -176,25 +199,50 @@ class UnknownSegment(_SegmentBase):
 
 
 # ---------- Discriminated union ----------
+#
+# One type per line so adding/removing a segment is a single-line diff and the
+# whole thing fits inside ruff's line-length budget without a noqa escape.
 
 BotSegment = Annotated[
-    PlainSegment | ImageSegment | AudioSegment | VideoSegment | FileSegment | FaceSegment | AtSegment | NodeSegment | NodesSegment | PokeSegment | ReplySegment | ForwardSegment | ShareSegment | ContactSegment | LocationSegment | MusicSegment | JsonSegment | UnknownSegment,
+    PlainSegment
+    | ImageSegment
+    | AudioSegment
+    | VideoSegment
+    | FileSegment
+    | FaceSegment
+    | AtSegment
+    | NodeSegment
+    | NodesSegment
+    | PokeSegment
+    | ReplySegment
+    | ForwardSegment
+    | ShareSegment
+    | ContactSegment
+    | LocationSegment
+    | MusicSegment
+    | JsonSegment
+    | UnknownSegment,
     Field(discriminator="type"),
 ]
 
 
-# Backwards-compatible alias: existing code that imports `BotMessage`
-# now gets the discriminated-union segment type.
-BotMessage = BotSegment
-
-
 # Resolve forward references for recursive segments.
 NodeSegment.model_rebuild()
+NodesSegment.model_rebuild()
 ForwardSegment.model_rebuild()
 
 
+# Reusable adapter for callers that need to validate a single segment payload
+# (e.g. parsing one segment out of a webhook list). `BotSegment` itself is a
+# typing construct and cannot be called like a Pydantic model.
+SegmentAdapter: TypeAdapter[BotSegment] = TypeAdapter(BotSegment)
+
+
 class BotEvent(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # `extra="ignore"` because this object decodes third-party IM webhooks
+    # (napcat / OneBot etc.) — upstream may add fields between releases and we
+    # don't want a new field to crash the consumer.
+    model_config = ConfigDict(extra="ignore")
 
     # 事件唯一标识符
     id: str
@@ -224,32 +272,4 @@ class BotEvent(BaseModel):
     session_name: str
 
 
-if __name__ == "__main__":
-    event = BotEvent(
-        id="b6e65187-5ac0-489c-b431-53078e9d2bbb",
-        platform="napcat",
-        time=1780837539.8344839,
-        type="message",
-        detail_type="private",
-        sub_type="normal",
-        message_id="191486285",
-        message=[
-            ReplySegment(message_id="191486284"),
-            AtSegment(user_id="12312432", display_name="bot"),
-            PlainSegment(text=" 你好,帮我看看这张图"),
-            ImageSegment(
-                url="https://example.com/img.png",
-                name="img.png",
-                size=20480,
-                mime="image/png",
-                width=1024,
-                height=768,
-            ),
-        ],
-        bot_id="12312432",
-        user_id="eraser",
-        user_name="aesrawer",
-        session_id="ewrwserase",
-        session_name="dfsfasd",
-    )
-    logger.info(event.model_dump_json(indent=2))
+BotEvent.model_rebuild()
