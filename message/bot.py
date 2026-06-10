@@ -1,7 +1,12 @@
+from __future__ import annotations
+
+import logging
 from enum import StrEnum
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
+logger = logging.getLogger(__name__)
 
 class BotMessageType(StrEnum):
     # Basic Segment Types
@@ -27,22 +32,178 @@ class BotMessageType(StrEnum):
     Unknown = "Unknown"
 
 
-class BotMessage(BaseModel):
-    type: BotMessageType
+class _SegmentBase(BaseModel):
+    """Common config for all segment models."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+# ---------- Basic segments ----------
+
+
+class PlainSegment(_SegmentBase):
+    type: Literal[BotMessageType.Plain] = BotMessageType.Plain
     text: str
+
+
+class ImageSegment(_SegmentBase):
+    type: Literal[BotMessageType.Image] = BotMessageType.Image
+    url: str | None = None
     name: str = ""
-    url: str = ""
-    size: int = 0
+    size: int | None = None
+    mime: str | None = None
+    width: int | None = None
+    height: int | None = None
+
+
+class AudioSegment(_SegmentBase):
+    type: Literal[BotMessageType.Audio] = BotMessageType.Audio
+    url: str | None = None
+    name: str = ""
+    size: int | None = None
+    mime: str | None = None
+    duration: float | None = None  # seconds
+
+
+class VideoSegment(_SegmentBase):
+    type: Literal[BotMessageType.Video] = BotMessageType.Video
+    url: str | None = None
+    name: str = ""
+    size: int | None = None
+    mime: str | None = None
+    width: int | None = None
+    height: int | None = None
+    duration: float | None = None  # seconds
+
+
+class FileSegment(_SegmentBase):
+    type: Literal[BotMessageType.File] = BotMessageType.File
+    url: str | None = None
+    filename: str = ""
+    size: int | None = None
+    mime: str | None = None
+    hash: str | None = None  # md5 / sha256 / etc.
+
+
+# ---------- IM-specific segments ----------
+
+
+class FaceSegment(_SegmentBase):
+    type: Literal[BotMessageType.Face] = BotMessageType.Face
+    face_id: str  # platform-specific emoji id (e.g. QQ face id)
+    name: str = ""  # human-readable label, optional
+
+
+class AtSegment(_SegmentBase):
+    type: Literal[BotMessageType.At] = BotMessageType.At
+    user_id: str = ""  # empty when at_all is True
+    display_name: str = ""
+    at_all: bool = False
+
+
+class NodeSegment(_SegmentBase):
+    type: Literal[BotMessageType.Node] = BotMessageType.Node
+    user_id: str
+    user_name: str = ""
+    time: float | None = None
+    content: list[BotSegment] = Field(default_factory=list)
+
+
+class NodesSegment(_SegmentBase):
+    type: Literal[BotMessageType.Nodes] = BotMessageType.Nodes
+    nodes: list[NodeSegment] = Field(default_factory=list)
+
+
+class PokeSegment(_SegmentBase):
+    type: Literal[BotMessageType.Poke] = BotMessageType.Poke
+    user_id: str
+    poke_type: str | None = None  # platform-specific subtype
+
+
+class ReplySegment(_SegmentBase):
+    type: Literal[BotMessageType.Reply] = BotMessageType.Reply
+    message_id: str
+    user_id: str | None = None  # original sender, when known
+
+
+class ForwardSegment(_SegmentBase):
+    type: Literal[BotMessageType.Forward] = BotMessageType.Forward
+    forward_id: str | None = None  # opaque id of the forwarded message chain
+    content: list[BotSegment] = Field(default_factory=list)
+
+
+class ShareSegment(_SegmentBase):
+    type: Literal[BotMessageType.Share] = BotMessageType.Share
+    url: str
+    title: str = ""
+    description: str = ""
+    image: str | None = None  # preview image url
+
+
+class ContactSegment(_SegmentBase):
+    type: Literal[BotMessageType.Contact] = BotMessageType.Contact
+    contact_type: str  # e.g. "user" | "group"
+    contact_id: str
+    name: str = ""
+
+
+class LocationSegment(_SegmentBase):
+    type: Literal[BotMessageType.Location] = BotMessageType.Location
+    latitude: float
+    longitude: float
+    title: str = ""
+    address: str = ""
+
+
+class MusicSegment(_SegmentBase):
+    type: Literal[BotMessageType.Music] = BotMessageType.Music
+    music_platform: str  # e.g. "qq", "163", "spotify"
+    song_id: str | None = None  # platform song id
+    url: str | None = None  # fallback / share url
+    title: str = ""
+    artist: str = ""
+    cover: str | None = None
+
+
+class JsonSegment(_SegmentBase):
+    type: Literal[BotMessageType.Json] = BotMessageType.Json
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class UnknownSegment(_SegmentBase):
+    type: Literal[BotMessageType.Unknown] = BotMessageType.Unknown
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------- Discriminated union ----------
+
+BotSegment = Annotated[
+    PlainSegment | ImageSegment | AudioSegment | VideoSegment | FileSegment | FaceSegment | AtSegment | NodeSegment | NodesSegment | PokeSegment | ReplySegment | ForwardSegment | ShareSegment | ContactSegment | LocationSegment | MusicSegment | JsonSegment | UnknownSegment,
+    Field(discriminator="type"),
+]
+
+
+# Backwards-compatible alias: existing code that imports `BotMessage`
+# now gets the discriminated-union segment type.
+BotMessage = BotSegment
+
+
+# Resolve forward references for recursive segments.
+NodeSegment.model_rebuild()
+ForwardSegment.model_rebuild()
 
 
 class BotEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     # 事件唯一标识符
     id: str
     # 消息平台
     platform: str
-    # 事件发生时间（Unix 时间戳）
+    # 事件发生时间（Unix 时间戳，单位：秒）
     time: float
-    # 事件类型，必须是 `meta`、`message`、`notice`、`request` 中的一个，分别表示元事件、消息事件、通知事件和请求事件
+    # 事件类型，必须是 `meta`、`message`、`notice`、`request` 中的一个，
+    # 分别表示元事件、消息事件、通知事件和请求事件
     type: str
     # 事件详细类型
     detail_type: str
@@ -50,8 +211,8 @@ class BotEvent(BaseModel):
     sub_type: str
     # 消息id
     message_id: str
-    # 消息内容(json 格式)
-    message: list[BotMessage]
+    # 消息段列表
+    message: list[BotSegment] = Field(default_factory=list)
 
     # 事件来源 bot 的 id
     bot_id: str
@@ -72,10 +233,23 @@ if __name__ == "__main__":
         detail_type="private",
         sub_type="normal",
         message_id="191486285",
-        message=[BotMessage(type=BotMessageType.Plain, text="", url="", size=0)],
+        message=[
+            ReplySegment(message_id="191486284"),
+            AtSegment(user_id="12312432", display_name="bot"),
+            PlainSegment(text=" 你好,帮我看看这张图"),
+            ImageSegment(
+                url="https://example.com/img.png",
+                name="img.png",
+                size=20480,
+                mime="image/png",
+                width=1024,
+                height=768,
+            ),
+        ],
         bot_id="12312432",
         user_id="eraser",
         user_name="aesrawer",
         session_id="ewrwserase",
         session_name="dfsfasd",
     )
+    logger.info(event.model_dump_json(indent=2))
