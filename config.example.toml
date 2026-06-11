@@ -1,0 +1,35 @@
+# DataHub 配置 — 启用的模块在此声明。
+# 新增模块：建一个 module/<name>.py，并在下面加一段 [module.<name>]。
+
+[hub]
+log_level = "INFO"
+log_file = "datahub.log"
+
+# --- 内置：echo 测试模块（冒烟用，平时建议关掉）------------------------------
+[module.echo]
+enabled = true
+interval = 5
+
+# --- IM：QQ (OneBot v11 / napcat) -------------------------------------------
+[module.im_qq]
+enabled = false
+ws_url = "ws://127.0.0.1:3001"
+access_token = ""
+bot_id = 0
+bot_name = "bot"
+whitelist_groups = []
+whitelist_users = []
+
+# --- IM：Telegram -----------------------------------------------------------
+[module.im_tg]
+enabled = false
+token = ""
+
+# --- LLM：OpenAI 兼容接口 ----------------------------------------------------
+[module.llm_openai]
+enabled = false
+api_key = ""
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+system_prompt = "You are a helpful assistant."
+max_context_tokens = 64000

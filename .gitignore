@@ -10,3 +10,8 @@ wheels/
 .venv
 
 .ruff_cache
+
+.vscode
+
+config.toml
+*.log

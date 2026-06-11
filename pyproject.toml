@@ -18,13 +18,13 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["app"]
+pythonpath = ["."]
 testpaths = ["test"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["app"]
+src = ["."]
 extend-exclude = ["reference", ".venv", "build", "dist"]
 
 [tool.ruff.lint]
@@ -78,7 +78,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["app"]
+known-first-party = ["hub", "module", "message", "utils"]
 combine-as-imports = true
 
 [tool.ruff.lint.flake8-pytest-style]
