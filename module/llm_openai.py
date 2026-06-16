@@ -52,6 +52,11 @@ async def reply(event: BotEvent, ctx: Context) -> None:
     if ctx.state.client is None:
         return
 
+    # IM 层会把"未 @ 机器人"的群消息打成 sub_type='overhear'。这种消息只是上下文采集，
+    # 不该触发回复（仍可以被 store 类模块订阅）。
+    if event.sub_type == "overhear":
+        return
+
     user_text = _extract_text(event)
     if not user_text:
         return

@@ -1,74 +1,168 @@
 """im_qq — OneBot v11/v12 正向 WebSocket IM 模块。
 
-职责（IM 层；不含 LLM 业务）：
-- 启动时连接 napcat / OneBot 实现端的 WS 服务
-- 把 OneBot 协议帧解析成 ``BotEvent``，发布到 ``im.message``
-- 订阅 ``im.reply``，把 ``BotEvent`` 序列化回 OneBot ``send_msg`` 调用
+职责（仅 IM 协议层）：
+- 连接 napcat / OneBot 实现端的 WS 服务，断线自动重连
+- 解析 OneBot 协议帧 → 构造 ``BotEvent``，按 18 类 ``BotSegment`` 双向映射
+- 对群消息做白名单过滤；对 @ 机器人/未 @ 分别打 ``sub_type='mentioned' / 'overhear'``
+- 双发：``im.message``（跨平台总线）+ ``qq.message``（平台专属）
+- 订阅 ``im.reply`` / ``qq.reply``：``BotEvent`` 反向序列化为 OneBot ``send_msg`` 动作
+- ``send_msg`` / ``get_file`` 之类需要回包的动作通过 echo + Future 字典实现 RPC
 
-依赖：``websockets``（pyproject 里加；目前未声明，按需安装）。
+不做的事（在别的模块里）：
+- 系统提示词、token 估算、上下文存储、LLM 调用 → ``module/llm_openai.py``
+- reply 段引用摘要索引 → 后续可独立做 ``module/store_reply_index.py``
 
-完整协议解析、白名单、动作超时等细节见仓库根目录的 ``qq_bot_example.py``，
-本文件先给出最小骨架，业务方按 TODO 逐步迁移：
-- 协议解析：``qq_bot_example.py`` 的 ``_on_message_event`` ~ 第 700 行附近
-- send_msg：``_call_action`` / ``_send_text`` ~ 第 850 行附近
+依赖：``websockets``、``httpx``。模块不启用时这些 import 不会触发。
+
+参考实现：仓库根目录 ``qq_bot_example.py``（1145 行单文件版）。
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import logging
+import time
+import uuid
 from typing import Any
 
 from hub import Context, Module
-from hub.topics import IM_MESSAGE, IM_REPLY
-from message.bot import BotEvent
+from hub.topics import IM_MESSAGE, IM_REPLY, QQ_MESSAGE, QQ_REPLY
+from message.bot import (
+    AtSegment,
+    AudioSegment,
+    BotEvent,
+    BotSegment,
+    ContactSegment,
+    FaceSegment,
+    FileSegment,
+    ForwardSegment,
+    ImageSegment,
+    JsonSegment,
+    LocationSegment,
+    MusicSegment,
+    PlainSegment,
+    PokeSegment,
+    ReplySegment,
+    ShareSegment,
+    UnknownSegment,
+    VideoSegment,
+)
 
 mod = Module("im_qq")
 
 
+# ---------------------------------------------------------------------------
+# 生命周期
+# ---------------------------------------------------------------------------
+
+
 @mod.on_startup
 async def setup(ctx: Context) -> None:
+    cfg = ctx.config
+    ctx.state.ws_url = cfg.get("ws_url", "ws://127.0.0.1:3001")
+    ctx.state.access_token = cfg.get("access_token", "") or None
+    ctx.state.bot_id = str(cfg.get("bot_id", "") or "")
+    ctx.state.bot_name = cfg.get("bot_name", "bot")
+    ctx.state.whitelist_groups = {str(g) for g in cfg.get("whitelist_groups", [])}
+    ctx.state.whitelist_users = {str(u) for u in cfg.get("whitelist_users", [])}
+    ctx.state.reconnect_interval = float(cfg.get("reconnect_interval", 3.0))
+    ctx.state.action_timeout = float(cfg.get("action_timeout", 30.0))
+    ctx.state.ws_max_size = int(cfg.get("ws_max_size", 2**24))
+    ctx.state.supported_image_mimes = set(
+        cfg.get("supported_image_mimes", ["image/jpeg", "image/png", "image/webp"])
+    )
+    ctx.state.image_download_timeout = float(cfg.get("image_download_timeout", 30.0))
+
     ctx.state.ws = None
-    ctx.state.ws_url = ctx.config.get("ws_url", "ws://127.0.0.1:3001")
-    ctx.state.access_token = ctx.config.get("access_token", "") or None
-    ctx.state.whitelist_groups = {str(g) for g in ctx.config.get("whitelist_groups", [])}
-    ctx.state.whitelist_users = {str(u) for u in ctx.config.get("whitelist_users", [])}
-    ctx.state.action_futures: dict[str, asyncio.Future[dict]] = {}
+    # echo → Future[response_dict]
+    ctx.state.pending_actions = {}
+    # httpx 客户端延迟到首次下载图片时再创建（避免没图片时也建连接池）
+    ctx.state.http = None
+
     ctx.spawn(_recv_loop(ctx), name="im_qq:ws_loop")
-    ctx.logger.info("im_qq: connecting to %s", ctx.state.ws_url)
+    ctx.logger.info(
+        "im_qq: connecting to %s (whitelist groups=%d users=%d)",
+        ctx.state.ws_url,
+        len(ctx.state.whitelist_groups),
+        len(ctx.state.whitelist_users),
+    )
 
 
 @mod.on_shutdown
 async def teardown(ctx: Context) -> None:
+    _cancel_pending_actions(ctx, "shutdown")
     ws = ctx.state.ws
     if ws is not None:
         try:
             await ws.close()
         except Exception:  # noqa: BLE001
             pass
+    http = ctx.state.http
+    if http is not None:
+        try:
+            await http.aclose()
+        except Exception:  # noqa: BLE001
+            pass
     ctx.logger.info("im_qq: closed")
 
 
+# ---------------------------------------------------------------------------
+# 出站订阅
+# ---------------------------------------------------------------------------
+
+
 @mod.on(IM_REPLY)
-async def on_reply(event: BotEvent, ctx: Context) -> None:
-    """把 BotEvent 反向序列化成 OneBot send_msg 动作。"""
-    if ctx.state.ws is None:
-        ctx.logger.warning("im_qq: ws not connected, drop reply")
+async def on_reply_broadcast(event: BotEvent, ctx: Context) -> None:
+    """跨平台广播 reply：仅承接 session_id 是 group:/private: 的事件。"""
+    if not event.session_id.startswith(("group:", "private:")):
         return
-    payload = _build_send_action(event)
+    await _send_reply(event, ctx)
+
+
+@mod.on(QQ_REPLY)
+async def on_reply_direct(event: BotEvent, ctx: Context) -> None:
+    """业务方显式定向到 QQ 时使用。"""
+    await _send_reply(event, ctx)
+
+
+async def _send_reply(event: BotEvent, ctx: Context) -> None:
+    if ctx.state.ws is None:
+        ctx.logger.warning("im_qq: ws not connected, drop reply mid=%s", event.message_id)
+        return
     try:
-        await ctx.state.ws.send(json.dumps(payload))
-    except Exception:  # noqa: BLE001
-        ctx.logger.exception("im_qq: failed to send reply")
+        params = _build_send_msg_params(event)
+    except ValueError as exc:
+        ctx.logger.warning("im_qq: build send_msg failed: %s", exc)
+        return
+    try:
+        resp = await _call_action(ctx, "send_msg", params)
+    except (asyncio.TimeoutError, RuntimeError):
+        ctx.logger.exception("im_qq: send_msg failed")
+        return
+    if resp.get("status") == "ok":
+        sent_mid = (resp.get("data") or {}).get("message_id")
+        ctx.logger.info(
+            "im_qq: sent reply session=%s mid=%s",
+            event.session_id,
+            sent_mid,
+        )
+    else:
+        ctx.logger.warning(
+            "im_qq: send_msg non-ok retcode=%s msg=%r",
+            resp.get("retcode"),
+            resp.get("message"),
+        )
 
 
 # ---------------------------------------------------------------------------
-# 内部
+# WS 主循环
 # ---------------------------------------------------------------------------
 
 
 async def _recv_loop(ctx: Context) -> None:
-    """连 WS、收帧、发 im.message。断线自动重连。"""
+    """连 WS、收帧、断线重连。整个 loop 直到 hub_event 被置位才退出。"""
     try:
         import websockets  # noqa: PLC0415  延迟导入：模块未启用时无需依赖
     except ImportError:
@@ -81,126 +175,617 @@ async def _recv_loop(ctx: Context) -> None:
 
     while not ctx.hub_event.is_set():
         try:
-            async with websockets.connect(ctx.state.ws_url, additional_headers=headers) as ws:
+            ctx.logger.info("im_qq: ws.connecting url=%s", ctx.state.ws_url)
+            async with websockets.connect(
+                ctx.state.ws_url,
+                additional_headers=headers,
+                max_size=ctx.state.ws_max_size,
+                open_timeout=10,
+                ping_interval=20,
+                ping_timeout=20,
+            ) as ws:
                 ctx.state.ws = ws
-                ctx.logger.info("im_qq: ws connected")
+                ctx.logger.info("im_qq: ws.connected url=%s", ctx.state.ws_url)
                 async for raw in ws:
                     if ctx.hub_event.is_set():
                         break
+                    if isinstance(raw, bytes):
+                        ctx.logger.debug("im_qq: ws binary frame (%d bytes), drop", len(raw))
+                        continue
                     await _on_ws_frame(raw, ctx)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001
-            ctx.logger.exception("im_qq: ws loop error, will reconnect")
+        except Exception as exc:  # noqa: BLE001
+            ctx.logger.warning("im_qq: ws error %s: %s", type(exc).__name__, exc)
         finally:
             ctx.state.ws = None
-        # 轻量退避；shutdown 时立即返回
+            _cancel_pending_actions(ctx, "ws closed")
+
+        if ctx.hub_event.is_set():
+            break
+        ctx.logger.info("im_qq: reconnect in %.1fs", ctx.state.reconnect_interval)
         try:
-            await asyncio.wait_for(ctx.hub_event.wait(), timeout=3.0)
+            await asyncio.wait_for(
+                ctx.hub_event.wait(), timeout=ctx.state.reconnect_interval
+            )
         except asyncio.TimeoutError:
             pass
 
 
-async def _on_ws_frame(raw: str | bytes, ctx: Context) -> None:
-    if isinstance(raw, bytes):
-        raw = raw.decode("utf-8", errors="replace")
+async def _on_ws_frame(raw: str, ctx: Context) -> None:
     try:
         data: dict[str, Any] = json.loads(raw)
     except json.JSONDecodeError:
-        ctx.logger.warning("im_qq: non-JSON frame, drop")
+        ctx.logger.warning("im_qq: non-JSON frame, drop (%d bytes)", len(raw))
+        return
+    if not isinstance(data, dict):
         return
 
-    # action 响应 — TODO：需要时接入 ctx.state.action_futures 做 RPC 风格调用
-    if "echo" in data and "status" in data:
+    if ctx.logger.isEnabledFor(logging.DEBUG):
+        ctx.logger.debug("im_qq: frame keys=%s", sorted(data.keys()))
+
+    # 1. action 响应
+    if "retcode" in data and "status" in data:
+        _on_action_response(data, ctx)
         return
 
-    # 仅处理 message 事件
-    if data.get("post_type") != "message":
+    # 2. 事件类型（兼容 v11 / v12）
+    ev_type = data.get("type") or data.get("post_type")
+    if ev_type in ("meta", "meta_event"):
         return
-
-    if not _is_in_whitelist(data, ctx):
+    if ev_type == "message":
+        await _on_message_event(data, ctx)
         return
-
-    event = _onebot_to_botevent(data)
-    if event is not None:
-        await ctx.publish(IM_MESSAGE, event)
-
-
-def _is_in_whitelist(data: dict, ctx: Context) -> bool:
-    msg_type = data.get("message_type")
-    if msg_type == "group":
-        return str(data.get("group_id")) in ctx.state.whitelist_groups
-    if msg_type == "private":
-        return str(data.get("user_id")) in ctx.state.whitelist_users
-    return False
-
-
-def _onebot_to_botevent(data: dict) -> BotEvent | None:
-    """OneBot v11 message 事件 → BotEvent。
-
-    TODO：完整段类型映射见 ``qq_bot_example.py`` 中对 ``message`` 数组的处理逻辑
-    （text / image / at / reply / face / forward / ...）。当前骨架只识别纯文本，
-    够把 LLM 链路跑通；其余段标记为 Unknown 以便下游自行决定。
-    """
-    from message.bot import PlainSegment, UnknownSegment  # noqa: PLC0415
-
-    raw_segments = data.get("message") or []
-    segments: list = []
-    for seg in raw_segments:
-        if not isinstance(seg, dict):
-            continue
-        stype = seg.get("type")
-        sdata = seg.get("data") or {}
-        if stype == "text":
-            text = sdata.get("text", "")
-            if text:
-                segments.append(PlainSegment(text=text))
-        else:
-            segments.append(UnknownSegment(raw=seg))
-
-    if not segments:
-        return None
-
-    msg_type = data.get("message_type", "")
-    is_group = msg_type == "group"
-    session_key = f"group:{data.get('group_id')}" if is_group else f"private:{data.get('user_id')}"
-    sender = data.get("sender") or {}
-    return BotEvent(
-        id=str(data.get("message_id", "")),
-        platform="qq",
-        time=float(data.get("time", 0)),
-        type="message",
-        detail_type=msg_type,
-        sub_type=str(data.get("sub_type", "")),
-        message_id=str(data.get("message_id", "")),
-        message=segments,
-        bot_id=str(data.get("self_id", "")),
-        user_id=str(data.get("user_id", "")),
-        user_name=str(sender.get("nickname") or sender.get("card") or ""),
-        session_id=session_key,
-        session_name=str(data.get("group_name") or sender.get("nickname") or session_key),
+    # 其他事件 (notice / request)：暂不处理，只记录
+    ctx.logger.info(
+        "im_qq: event.other type=%s detail=%s",
+        ev_type,
+        data.get("detail_type") or data.get("notice_type") or data.get("request_type"),
     )
 
 
-def _build_send_action(event: BotEvent) -> dict:
-    """BotEvent → OneBot send_msg 动作。
+# ---------------------------------------------------------------------------
+# 入站消息：协议帧 → BotEvent
+# ---------------------------------------------------------------------------
 
-    TODO：图片/at/reply 等段反向映射见 ``qq_bot_example.py`` 的发送逻辑。
-    """
-    text_parts: list[str] = []
+
+async def _on_message_event(ev: dict, ctx: Context) -> None:
+    detail = ev.get("detail_type") or ev.get("message_type") or ""
+    message_id = str(ev.get("message_id", ""))
+    user_id = str(ev.get("user_id", ""))
+    group_id_raw = ev.get("group_id")
+    group_id = str(group_id_raw) if group_id_raw is not None else ""
+
+    self_user_id = _resolve_self_user_id(ev, ctx)
+    raw_segments: list[dict] = ev.get("message") or []
+    raw_text = ev.get("alt_message") or ev.get("raw_message") or ""
+
+    # 白名单过滤
+    if detail == "group":
+        session_id = f"group:{group_id}"
+        if group_id not in ctx.state.whitelist_groups:
+            ctx.logger.debug(
+                "im_qq: msg.skip not_whitelisted group=%s mid=%s", group_id, message_id
+            )
+            return
+    elif detail == "private":
+        session_id = f"private:{user_id}"
+        if user_id not in ctx.state.whitelist_users:
+            ctx.logger.debug(
+                "im_qq: msg.skip not_whitelisted user=%s mid=%s", user_id, message_id
+            )
+            return
+    else:
+        ctx.logger.debug(
+            "im_qq: msg.skip unsupported_detail=%s mid=%s", detail, message_id
+        )
+        return
+
+    # 段映射
+    segments = await _onebot_to_segments(raw_segments, ctx, message_id)
+
+    # @ 检测
+    is_mentioned = (
+        detail == "private"
+        or _is_mentioned(raw_segments, raw_text, self_user_id, ctx.state.bot_name)
+    )
+    sub_type_label = "mentioned" if is_mentioned else "overhear"
+
+    sender = ev.get("sender") or {}
+    nickname = ""
+    if isinstance(sender, dict):
+        nickname = (sender.get("card") or sender.get("nickname") or "").strip()
+    if not nickname:
+        nickname = user_id or "unknown"
+
+    event = BotEvent(
+        id=message_id,
+        platform="qq",
+        time=float(ev.get("time", 0) or 0),
+        type="message",
+        detail_type=detail,
+        sub_type=sub_type_label,
+        message_id=message_id,
+        message=segments,
+        bot_id=self_user_id,
+        user_id=user_id,
+        user_name=nickname,
+        session_id=session_id,
+        session_name=str(ev.get("group_name") or nickname or session_id),
+    )
+
+    ctx.logger.info(
+        "im_qq: msg.recv mid=%s session=%s sub_type=%s segs=%d nickname=%r",
+        message_id,
+        session_id,
+        sub_type_label,
+        len(segments),
+        nickname,
+    )
+
+    await ctx.publish(IM_MESSAGE, event)
+    await ctx.publish(QQ_MESSAGE, event)
+
+
+def _resolve_self_user_id(ev: dict, ctx: Context) -> str:
+    """从事件里提自身 user_id；失败兜底 ctx.config.bot_id。"""
+    self_info = ev.get("self") or {}
+    if isinstance(self_info, dict):
+        sid = self_info.get("user_id")
+        if sid not in (None, ""):
+            return str(sid)
+    if ev.get("self_id") not in (None, ""):
+        return str(ev.get("self_id"))
+    return ctx.state.bot_id
+
+
+# ---------------------------------------------------------------------------
+# 段映射：OneBot → BotSegment
+# ---------------------------------------------------------------------------
+
+
+async def _onebot_to_segments(
+    raw_segments: list[dict], ctx: Context, message_id: str
+) -> list[BotSegment]:
+    out: list[BotSegment] = []
+    for seg in raw_segments:
+        if not isinstance(seg, dict):
+            continue
+        bs = await _one_segment(seg, ctx, message_id)
+        if bs is not None:
+            out.append(bs)
+    return out
+
+
+async def _one_segment(
+    seg: dict, ctx: Context, message_id: str
+) -> BotSegment | None:
+    """OneBot 单段 → BotSegment；解析失败 fallback 到 UnknownSegment。"""
+    t = seg.get("type")
+    data = seg.get("data") or {}
+    try:
+        if t == "text":
+            text = str(data.get("text", ""))
+            return PlainSegment(text=text) if text else None
+
+        if t == "image":
+            return await _build_image_segment(data, ctx, message_id)
+
+        if t in ("record", "voice"):
+            return AudioSegment(
+                url=data.get("url") or data.get("file") or None,
+                name=str(data.get("file") or ""),
+                size=_to_int(data.get("file_size")),
+            )
+
+        if t == "video":
+            return VideoSegment(
+                url=data.get("url") or data.get("file") or None,
+                name=str(data.get("file") or ""),
+                size=_to_int(data.get("file_size")),
+            )
+
+        if t == "file":
+            return FileSegment(
+                url=data.get("url") or None,
+                filename=str(data.get("name") or data.get("file") or ""),
+                size=_to_int(data.get("file_size") or data.get("size")),
+            )
+
+        if t == "face":
+            return FaceSegment(
+                face_id=str(data.get("id", "") or ""),
+                name=str(data.get("name") or ""),
+            )
+
+        if t in ("at", "mention"):
+            target = _seg_at_target(seg)
+            if target == "all":
+                return AtSegment(at_all=True)
+            return AtSegment(user_id=target or "")
+
+        if t in ("at_all", "mention_all"):
+            return AtSegment(at_all=True)
+
+        if t == "reply":
+            mid = str(data.get("id") or data.get("message_id") or "")
+            uid = data.get("user_id")
+            return ReplySegment(
+                message_id=mid,
+                user_id=str(uid) if uid not in (None, "") else None,
+            )
+
+        if t == "forward":
+            return ForwardSegment(
+                forward_id=str(data.get("id") or data.get("forward_id") or "") or None,
+            )
+
+        if t == "share":
+            return ShareSegment(
+                url=str(data.get("url") or ""),
+                title=str(data.get("title") or ""),
+                description=str(data.get("content") or data.get("description") or ""),
+                image=data.get("image") or None,
+            )
+
+        if t == "contact":
+            ctype = str(data.get("type") or "")
+            return ContactSegment(
+                contact_type="group" if ctype == "group" else "user",
+                contact_id=str(data.get("id") or data.get("user_id") or data.get("group_id") or ""),
+                name=str(data.get("name") or ""),
+            )
+
+        if t == "location":
+            return LocationSegment(
+                latitude=float(data.get("lat") or 0.0),
+                longitude=float(data.get("lon") or 0.0),
+                title=str(data.get("title") or ""),
+                address=str(data.get("content") or data.get("address") or ""),
+            )
+
+        if t == "music":
+            return MusicSegment(
+                music_platform=str(data.get("type") or "qq"),
+                song_id=data.get("id") or None,
+                url=data.get("url") or None,
+                title=str(data.get("title") or ""),
+                artist=str(data.get("artist") or data.get("singer") or ""),
+                cover=data.get("image") or None,
+            )
+
+        if t == "json":
+            payload = data.get("data")
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except json.JSONDecodeError:
+                    payload = {"raw": payload}
+            return JsonSegment(data=payload if isinstance(payload, dict) else {"raw": payload})
+
+        if t == "poke":
+            return PokeSegment(
+                user_id=str(data.get("qq") or data.get("user_id") or ""),
+                poke_type=str(data.get("type") or "") or None,
+            )
+    except Exception:  # noqa: BLE001
+        ctx.logger.exception("im_qq: segment parse failed type=%s", t)
+
+    return UnknownSegment(raw=seg)
+
+
+async def _build_image_segment(
+    data: dict, ctx: Context, message_id: str
+) -> ImageSegment:
+    """图片：优先用段内 url 直接下载；没 url 走 v12 get_file 兜底。"""
+    seg_url = data.get("url") or ""
+    if not seg_url and isinstance(data.get("file"), str) and data["file"].startswith("http"):
+        seg_url = data["file"]
+
+    fallback_name = str(data.get("file") or "")
+    width = _to_int(data.get("width") or data.get("pic_width"))
+    height = _to_int(data.get("height") or data.get("pic_height"))
+    size = _to_int(data.get("file_size") or data.get("size"))
+
+    data_uri: str | None = None
+    mime: str | None = None
+
+    if seg_url:
+        data_uri, mime = await _download_image_to_data_uri(
+            seg_url, fallback_name, ctx, message_id
+        )
+    else:
+        file_id = str(data.get("file_id") or data.get("file") or "")
+        if file_id:
+            data_uri, mime = await _fetch_image_via_get_file(file_id, ctx, message_id)
+        else:
+            ctx.logger.warning("im_qq: image.no_source mid=%s keys=%s",
+                               message_id, sorted(data.keys()))
+
+    return ImageSegment(
+        url=data_uri or seg_url or None,
+        name=fallback_name,
+        size=size,
+        mime=mime or _guess_image_mime_from_url(seg_url, fallback_name),
+        width=width,
+        height=height,
+    )
+
+
+async def _download_image_to_data_uri(
+    url: str, hint_name: str, ctx: Context, message_id: str
+) -> tuple[str | None, str | None]:
+    """HTTP 直下 → base64 data URI；返回 (data_uri, mime)。失败 (None, None)。"""
+    http = ctx.state.http
+    if http is None:
+        try:
+            import httpx  # noqa: PLC0415
+        except ImportError:
+            ctx.logger.error("im_qq: httpx 未安装，无法下载图片")
+            return None, None
+        http = httpx.AsyncClient(
+            timeout=ctx.state.image_download_timeout, follow_redirects=True
+        )
+        ctx.state.http = http
+
+    try:
+        t0 = time.perf_counter()
+        resp = await http.get(url)
+        resp.raise_for_status()
+        content = resp.content
+        dt = (time.perf_counter() - t0) * 1000
+    except Exception as exc:  # noqa: BLE001
+        ctx.logger.warning(
+            "im_qq: image.download_failed mid=%s url=%s err=%s",
+            message_id, url[:120], exc,
+        )
+        return None, None
+
+    b64 = base64.b64encode(content).decode("ascii")
+    ctype = resp.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+    mime = ctype if ctype.startswith("image/") else _guess_image_mime_from_url(url, hint_name)
+    ctx.logger.info(
+        "im_qq: image.downloaded mid=%s in %.1fms bytes=%d mime=%s",
+        message_id, dt, len(content), mime,
+    )
+    return f"data:{mime};base64,{b64}", mime
+
+
+async def _fetch_image_via_get_file(
+    file_id: str, ctx: Context, message_id: str
+) -> tuple[str | None, str | None]:
+    """v12 兜底：get_file(type=data) 拿 base64。"""
+    try:
+        resp = await _call_action(
+            ctx, "get_file", {"file_id": file_id, "type": "data"}
+        )
+    except (asyncio.TimeoutError, RuntimeError) as exc:
+        ctx.logger.warning(
+            "im_qq: image.get_file_failed mid=%s file_id=%s err=%s",
+            message_id, file_id, exc,
+        )
+        return None, None
+    if resp.get("status") != "ok":
+        ctx.logger.warning(
+            "im_qq: image.get_file_non_ok mid=%s file_id=%s retcode=%s",
+            message_id, file_id, resp.get("retcode"),
+        )
+        return None, None
+    d = resp.get("data") or {}
+    b64 = d.get("data") or ""
+    if isinstance(b64, (bytes, bytearray)):
+        b64 = base64.b64encode(b64).decode("ascii")
+    if not isinstance(b64, str) or not b64:
+        return None, None
+    mime = _guess_image_mime_from_url(str(d.get("name") or ""))
+    return f"data:{mime};base64,{b64}", mime
+
+
+# ---------------------------------------------------------------------------
+# 出站：BotEvent → OneBot send_msg params
+# ---------------------------------------------------------------------------
+
+
+def _build_send_msg_params(event: BotEvent) -> dict:
+    """BotEvent → send_msg 动作 params（不含 action / echo 字段）。"""
+    onebot_segs: list[dict] = []
     for seg in event.message:
-        if seg.type == "Plain":
-            text_parts.append(seg.text)  # type: ignore[attr-defined]
-    text = "".join(text_parts) or "..."
+        ob = _bot_segment_to_onebot(seg)
+        if ob is not None:
+            onebot_segs.append(ob)
+    if not onebot_segs:
+        # 兜底，避免发空消息
+        onebot_segs.append({"type": "text", "data": {"text": "..."}})
 
     if event.session_id.startswith("group:"):
         gid = event.session_id.removeprefix("group:")
+        try:
+            group_id: Any = int(gid)
+        except ValueError:
+            group_id = gid
         return {
-            "action": "send_group_msg",
-            "params": {"group_id": int(gid), "message": [{"type": "text", "data": {"text": text}}]},
+            "message_type": "group",
+            "group_id": group_id,
+            "message": onebot_segs,
         }
-    uid = event.session_id.removeprefix("private:")
-    return {
-        "action": "send_private_msg",
-        "params": {"user_id": int(uid), "message": [{"type": "text", "data": {"text": text}}]},
-    }
+    if event.session_id.startswith("private:"):
+        uid = event.session_id.removeprefix("private:")
+        try:
+            user_id: Any = int(uid)
+        except ValueError:
+            user_id = uid
+        return {
+            "message_type": "private",
+            "user_id": user_id,
+            "message": onebot_segs,
+        }
+    raise ValueError(f"im_qq: unsupported session_id {event.session_id!r}")
+
+
+def _bot_segment_to_onebot(seg: BotSegment) -> dict | None:
+    t = seg.type
+    if t == "Plain":
+        return {"type": "text", "data": {"text": seg.text}}  # type: ignore[union-attr]
+    if t == "Image":
+        # 已经是 data: URI 或 http url 都直接传给 OneBot
+        url = seg.url  # type: ignore[union-attr]
+        if not url:
+            return None
+        return {"type": "image", "data": {"file": url}}
+    if t == "At":
+        if seg.at_all:  # type: ignore[union-attr]
+            return {"type": "at", "data": {"qq": "all"}}
+        return {"type": "at", "data": {"qq": seg.user_id}}  # type: ignore[union-attr]
+    if t == "Reply":
+        return {"type": "reply", "data": {"id": seg.message_id}}  # type: ignore[union-attr]
+    if t == "Face":
+        return {"type": "face", "data": {"id": seg.face_id}}  # type: ignore[union-attr]
+    if t == "Audio":
+        url = seg.url  # type: ignore[union-attr]
+        if not url:
+            return None
+        return {"type": "record", "data": {"file": url}}
+    if t == "Video":
+        url = seg.url  # type: ignore[union-attr]
+        if not url:
+            return None
+        return {"type": "video", "data": {"file": url}}
+    if t == "File":
+        url = seg.url  # type: ignore[union-attr]
+        if not url:
+            return None
+        return {"type": "file", "data": {"file": url}}
+    if t == "Share":
+        return {
+            "type": "share",
+            "data": {
+                "url": seg.url,  # type: ignore[union-attr]
+                "title": seg.title,  # type: ignore[union-attr]
+                "content": seg.description,  # type: ignore[union-attr]
+            },
+        }
+    if t == "Unknown":
+        # 直接转发原始段
+        raw = seg.raw  # type: ignore[union-attr]
+        if isinstance(raw, dict) and raw.get("type"):
+            return raw
+        return None
+    # 其他段（Forward/Music/Json/Location/Contact/Poke/Node/Nodes）暂不下发
+    return None
+
+
+# ---------------------------------------------------------------------------
+# action RPC
+# ---------------------------------------------------------------------------
+
+
+async def _call_action(
+    ctx: Context,
+    action: str,
+    params: dict,
+    *,
+    timeout: float | None = None,
+) -> dict:
+    ws = ctx.state.ws
+    if ws is None:
+        raise RuntimeError("im_qq: ws not connected")
+    echo = uuid.uuid4().hex
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future[dict] = loop.create_future()
+    ctx.state.pending_actions[echo] = fut
+    payload = json.dumps(
+        {"action": action, "params": params, "echo": echo}, ensure_ascii=False
+    )
+    try:
+        await ws.send(payload)
+    except Exception:
+        ctx.state.pending_actions.pop(echo, None)
+        raise
+    try:
+        return await asyncio.wait_for(fut, timeout=timeout or ctx.state.action_timeout)
+    finally:
+        ctx.state.pending_actions.pop(echo, None)
+
+
+def _on_action_response(resp: dict, ctx: Context) -> None:
+    echo = resp.get("echo") or ""
+    fut: asyncio.Future[dict] | None = ctx.state.pending_actions.get(echo) if echo else None
+    if fut is not None and not fut.done():
+        fut.set_result(resp)
+
+
+def _cancel_pending_actions(ctx: Context, reason: str) -> None:
+    pending = ctx.state.pending_actions
+    if not pending:
+        return
+    for echo, fut in list(pending.items()):
+        if not fut.done():
+            fut.set_exception(RuntimeError(f"action {echo} cancelled: {reason}"))
+        pending.pop(echo, None)
+
+
+# ---------------------------------------------------------------------------
+# 协议工具（部分搬自 qq_bot_example.py）
+# ---------------------------------------------------------------------------
+
+
+def _seg_at_target(seg: dict) -> str | None:
+    """从 at / mention 段里取出被 @ 用户 ID（字符串），或 'all'。"""
+    if seg.get("type") not in ("at", "mention"):
+        return None
+    data = seg.get("data") or {}
+    target = data.get("qq")
+    if target in (None, ""):
+        target = data.get("user_id")
+    if target in (None, ""):
+        return None
+    return str(target)
+
+
+def _is_mentioned(
+    raw_segments: list[dict],
+    raw_text: str,
+    self_user_id: str,
+    bot_name: str,
+) -> bool:
+    """命中条件：at/mention 段指向自己，或纯文本中包含 @自身ID / @机器人名。"""
+    for seg in raw_segments or []:
+        target = _seg_at_target(seg)
+        if target == "all":
+            continue  # @全体不算单独 @ 机器人
+        if target and self_user_id and target == str(self_user_id):
+            return True
+    haystack = raw_text or ""
+    candidates: list[str] = []
+    if self_user_id:
+        candidates.append(f"@{self_user_id}")
+        candidates.append(f"[CQ:at,qq={self_user_id}]")
+    if bot_name:
+        candidates.append(f"@{bot_name}")
+    return any(kw and kw in haystack for kw in candidates)
+
+
+def _guess_image_mime_from_url(url: str | None, fallback_name: str | None = None) -> str:
+    src = (url or "").lower().split("?", 1)[0]
+    for suf, mime in (
+        (".png", "image/png"),
+        (".gif", "image/gif"),
+        (".webp", "image/webp"),
+        (".bmp", "image/bmp"),
+        (".jpeg", "image/jpeg"),
+        (".jpg", "image/jpeg"),
+    ):
+        if src.endswith(suf):
+            return mime
+    if fallback_name:
+        return _guess_image_mime_from_url(fallback_name)
+    return "image/jpeg"
+
+
+def _to_int(v: Any) -> int | None:
+    if v is None or v == "":
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None

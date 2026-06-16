@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from hub import Context, Module
-from hub.topics import IM_MESSAGE, IM_REPLY
+from hub.topics import IM_MESSAGE, IM_REPLY, TG_MESSAGE, TG_REPLY
 from message.bot import BotEvent, PlainSegment
 
 if TYPE_CHECKING:
@@ -62,7 +62,9 @@ async def setup(ctx: Context) -> None:
             session_id=f"tg:{chat_id}",
             session_name=update.effective_chat.title if update.effective_chat else "",
         )
+        # 双发：跨平台 + 平台专属
         await ctx.publish(IM_MESSAGE, event)
+        await ctx.publish(TG_MESSAGE, event)
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
 
@@ -88,9 +90,24 @@ async def teardown(ctx: Context) -> None:
 
 
 @mod.on(IM_REPLY)
-async def on_reply(event: BotEvent, ctx: Context) -> None:
+async def on_reply_broadcast(event: BotEvent, ctx: Context) -> None:
+    """跨平台广播 reply：仅承接 session_id 属于 telegram 的事件。"""
+    if not event.session_id.startswith("tg:"):
+        return
+    await _send_reply(event, ctx)
+
+
+@mod.on(TG_REPLY)
+async def on_reply_direct(event: BotEvent, ctx: Context) -> None:
+    """业务方显式定向到 Telegram 时使用。"""
+    await _send_reply(event, ctx)
+
+
+async def _send_reply(event: BotEvent, ctx: Context) -> None:
     app: Any = ctx.state.app
-    if app is None or not event.session_id.startswith("tg:"):
+    if app is None:
+        return
+    if not event.session_id.startswith("tg:"):
         return
     chat_id = int(event.session_id.removeprefix("tg:"))
     text = "".join(seg.text for seg in event.message if seg.type == "Plain")  # type: ignore[attr-defined]
