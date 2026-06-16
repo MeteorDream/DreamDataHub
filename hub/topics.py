@@ -32,7 +32,7 @@ LLM_EXCHANGE = "llm.exchange"
 
 # 框架类
 SYSTEM_READY = "system.ready"  # payload: {} — 所有 on_startup 完成
-SYSTEM_HEARTBEAT = "system.heartbeat"  # payload: {} — 框架心跳
+SYSTEM_HEARTBEAT = "system.heartbeat"  # payload: {"count", "state", "message", "timestamp"} — 框架心跳
 SYSTEM_ERROR = "system.error"  # payload: {"module", "topic", "exc"}
 
 

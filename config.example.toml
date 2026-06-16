@@ -5,6 +5,11 @@
 log_level = "INFO"
 log_file = "datahub.log"
 
+# --- 内置：系统 heartbeat 模块(建议开启) ------------------------------
+[module.heartbeat]
+enabled = true
+interval = 5.0
+
 # --- 内置：echo 测试模块（冒烟用，平时建议关掉）------------------------------
 [module.echo]
 enabled = true
