@@ -29,8 +29,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 if TYPE_CHECKING:
     from hub.context import Context
 
-# 用户写的 handler 签名：async (payload, ctx) -> None
-Handler = Callable[[Any, "Context"], Awaitable[None]]
+# 用户写的 handler 签名：async (ctx, payload) -> None
+Handler = Callable[["Context", Any], Awaitable[None]]
 # 生命周期钩子签名：async (ctx) -> None
 Lifecycle = Callable[["Context"], Awaitable[None]]
 

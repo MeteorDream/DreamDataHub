@@ -48,7 +48,7 @@ async def teardown(ctx: Context) -> None:
 
 
 @mod.on(IM_MESSAGE)
-async def reply(event: BotEvent, ctx: Context) -> None:
+async def reply(ctx: Context, event: BotEvent) -> None:
     if ctx.state.client is None:
         return
 

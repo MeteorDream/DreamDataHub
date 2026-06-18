@@ -227,13 +227,13 @@ def _make_ctx(pool=None, tables=None) -> SimpleNamespace:
 def test_on_write_drops_non_dict_payload() -> None:
     ctx = _make_ctx()
     # 非 dict、缺 table、row 不是 dict、未知 table、pool=None — 都不该抛
-    asyncio.run(mysql_mod.on_write("not a dict", ctx))
-    asyncio.run(mysql_mod.on_write({}, ctx))
-    asyncio.run(mysql_mod.on_write({"table": "llm_exchange", "row": "bad"}, ctx))
-    asyncio.run(mysql_mod.on_write({"table": "no_such_table", "row": {}}, ctx))
+    asyncio.run(mysql_mod.on_write(ctx, "not a dict"))
+    asyncio.run(mysql_mod.on_write(ctx, {}))
+    asyncio.run(mysql_mod.on_write(ctx, {"table": "llm_exchange", "row": "bad"}))
+    asyncio.run(mysql_mod.on_write(ctx, {"table": "no_such_table", "row": {}}))
     asyncio.run(mysql_mod.on_write(
-        {"table": "llm_exchange", "row": {"prompt": "x", "response": "y", "model": "m", "platform": "p"}},
         ctx,
+        {"table": "llm_exchange", "row": {"prompt": "x", "response": "y", "model": "m", "platform": "p"}},
     ))  # pool=None → drop
 
 
@@ -265,7 +265,7 @@ def test_on_write_with_fake_pool_executes_insert() -> None:
             "platform": "qq",
         },
     }
-    asyncio.run(mysql_mod.on_write(payload, ctx))
+    asyncio.run(mysql_mod.on_write(ctx, payload))
 
     cursor.execute.assert_awaited_once()
     sql, params = cursor.execute.call_args.args

@@ -33,17 +33,17 @@ async def teardown(ctx: Context) -> None:
 
 
 @mod.on(SYSTEM_READY)
-async def on_ready(_payload, ctx: Context) -> None:
+async def on_ready(ctx: Context, _payload) -> None:
     ctx.logger.info("system.ready received")
 
 
 @mod.on(IM_MESSAGE)
-async def on_message(event: BotEvent, ctx: Context) -> None:
+async def on_message(ctx: Context, event: BotEvent) -> None:
     ctx.logger.info("got im.message: %s", _summarize(event))
 
 
 @mod.on(IM_REPLY)
-async def on_reply(event: BotEvent, ctx: Context) -> None:
+async def on_reply(ctx: Context, event: BotEvent) -> None:
     ctx.logger.info("got im.reply:   %s", _summarize(event))
 
 

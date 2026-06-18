@@ -39,7 +39,7 @@ def test_publish_routes_to_subscriber() -> None:
         await ctx.publish("greet", "hello")
 
     @b.on("greet")
-    async def recv(payload: Any, _ctx: Context) -> None:
+    async def recv(_ctx: Context, payload: Any) -> None:
         sent.append(payload)
 
     async def go() -> None:
@@ -61,15 +61,15 @@ def test_handler_exception_does_not_kill_hub() -> None:
     sink = Module("sink")
 
     @bad.on("topic")
-    async def crash(_payload: Any, _ctx: Context) -> None:
+    async def crash(_ctx: Context, _payload: Any) -> None:
         raise RuntimeError("boom")
 
     @good.on("topic")
-    async def ok(_payload: Any, _ctx: Context) -> None:
+    async def ok(_ctx: Context, _payload: Any) -> None:
         survived.append("ok")
 
     @sink.on(SYSTEM_ERROR)
-    async def on_err(payload: dict, _ctx: Context) -> None:
+    async def on_err(_ctx: Context, payload: dict) -> None:
         errors.append(payload)
 
     @bad.on_startup
@@ -130,7 +130,7 @@ def test_system_ready_fires_after_all_startups() -> None:
         seen.append("a:up")
 
     @b.on(SYSTEM_READY)
-    async def on_ready(_payload: Any, _ctx: Context) -> None:
+    async def on_ready(_ctx: Context, _payload: Any) -> None:
         seen.append("b:ready")
 
     async def go() -> None:

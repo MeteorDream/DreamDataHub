@@ -114,7 +114,7 @@ async def teardown(ctx: Context) -> None:
 
 
 @mod.on(IM_REPLY)
-async def on_reply_broadcast(event: BotEvent, ctx: Context) -> None:
+async def on_reply_broadcast(ctx: Context, event: BotEvent) -> None:
     """跨平台广播 reply：仅承接 session_id 是 group:/private: 的事件。"""
     if not event.session_id.startswith(("group:", "private:")):
         return
@@ -122,7 +122,7 @@ async def on_reply_broadcast(event: BotEvent, ctx: Context) -> None:
 
 
 @mod.on(QQ_REPLY)
-async def on_reply_direct(event: BotEvent, ctx: Context) -> None:
+async def on_reply_direct(ctx: Context, event: BotEvent) -> None:
     """业务方显式定向到 QQ 时使用。"""
     await _send_reply(event, ctx)
 

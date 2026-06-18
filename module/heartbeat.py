@@ -30,15 +30,15 @@ async def teardown(ctx: Context) -> None:
 
 
 @mod.on(SYSTEM_READY)
-async def on_ready(_payload, ctx: Context) -> None:
+async def on_ready(ctx: Context, _payload) -> None:
     ctx.logger.info("system.ready received")
 
 @mod.on(SYSTEM_HEARTBEAT)
-async def on_heartbeat(_payload, ctx: Context) -> None:
+async def on_heartbeat(ctx: Context, _payload) -> None:
     ctx.logger.info("system.heartbeat received: %s", _payload)
 
 @mod.on(SYSTEM_ERROR)
-async def on_error(_payload, ctx: Context) -> None:
+async def on_error(ctx: Context, _payload) -> None:
     ctx.logger.error("system.error receive: %s", _payload)
 
 

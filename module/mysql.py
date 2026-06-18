@@ -93,7 +93,7 @@ async def teardown(ctx: Context) -> None:
 
 
 @mod.on(DATABASE_WRITE)
-async def on_write(payload: Any, ctx: Context) -> None:
+async def on_write(ctx: Context, payload: Any) -> None:
     if not isinstance(payload, dict):
         ctx.logger.warning("mysql: bad payload type=%r", type(payload).__name__)
         return

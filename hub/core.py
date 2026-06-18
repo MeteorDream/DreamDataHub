@@ -41,7 +41,7 @@ class _Subscriber:
     async def invoke(self, payload: Any, hub: Hub) -> None:
         """安全调用 handler — 异常被捕获、上报 system.error，绝不外泄。"""
         try:
-            await self.fn(payload, self.ctx)
+            await self.fn(self.ctx, payload)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
