@@ -5,6 +5,8 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "aiomysql>=0.3.2",
+    "openai>=2.42.0",
     "pydantic>=2.13.4",
     "python-telegram-bot>=22.7",
     "websockets>=16.0",

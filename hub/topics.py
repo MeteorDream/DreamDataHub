@@ -30,6 +30,9 @@ TG_REPLY = "tg.reply"
 # LLM 类 — payload 为 dict {"prompt", "response", "meta"}
 LLM_EXCHANGE = "llm.exchange"
 
+# 数据库类 — payload 为 dict {"table": str, "row": dict}；mysql 模块订阅
+DATABASE_WRITE = "database.write"
+
 # 框架类
 SYSTEM_READY = "system.ready"  # payload: {} — 所有 on_startup 完成
 SYSTEM_HEARTBEAT = "system.heartbeat"  # payload: {"count", "state", "message", "timestamp"} — 框架心跳
@@ -44,6 +47,7 @@ PLATFORM_TOPICS: dict[str, tuple[str, str]] = {
 
 
 __all__ = [
+    "DATABASE_WRITE",
     "IM_MESSAGE",
     "IM_REPLY",
     "LLM_EXCHANGE",

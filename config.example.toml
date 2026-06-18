@@ -12,8 +12,20 @@ interval = 5.0
 
 # --- 内置：echo 测试模块（冒烟用，平时建议关掉）------------------------------
 [module.echo]
-enabled = true
+enabled = false
 interval = 5
+
+# --- DB：MySQL --------------------------------------------------------------
+[module.mysql]
+enabled = false
+host = "127.0.0.1"
+port = 3306
+user = "datahub"
+password = ""
+database = "datahub"
+pool_size = 5
+# 留空表示 message/db.py 里 TABLES 注册的全部启用
+enabled_tables = ["bot_message"]
 
 # --- IM：QQ (OneBot v11 / napcat) -------------------------------------------
 [module.im_qq]
