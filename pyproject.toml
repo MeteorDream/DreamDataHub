@@ -8,6 +8,7 @@ dependencies = [
     "aiomysql>=0.3.2",
     "openai>=2.42.0",
     "pydantic>=2.13.4",
+    "pytelegrambotapi>=4.34.0",
     "python-telegram-bot>=22.7",
     "websockets>=16.0",
 ]

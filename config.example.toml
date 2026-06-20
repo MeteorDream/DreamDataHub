@@ -38,7 +38,7 @@ whitelist_groups = []
 whitelist_users = []
 
 # --- IM：Telegram -----------------------------------------------------------
-[module.im_tg]
+[module.telegram_bot]
 enabled = false
 token = ""
 

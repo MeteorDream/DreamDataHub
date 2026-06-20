@@ -21,7 +21,7 @@ __all__ = [
     "MusicSegment",
     "NodeSegment",
     "NodesSegment",
-    "PlainSegment",
+    "TextSegment",
     "PokeSegment",
     "ReplySegment",
     "SegmentAdapter",
@@ -33,10 +33,10 @@ __all__ = [
 
 class BotMessageType(StrEnum):
     # Basic Segment Types
-    Plain = "Plain"  # plain text message
+    Text = "Text"  # plain text message
     Image = "Image"  # image
-    Audio = "Audio"  # audio
     Video = "Video"  # video
+    Audio = "Audio"  # audio
     File = "File"  # file attachment
 
     # IM-specific Segment Types
@@ -64,8 +64,8 @@ class _SegmentBase(BaseModel):
 # ---------- Basic segments ----------
 
 
-class PlainSegment(_SegmentBase):
-    type: Literal[BotMessageType.Plain] = BotMessageType.Plain
+class TextSegment(_SegmentBase):
+    type: Literal[BotMessageType.Text] = BotMessageType.Text
     text: str
 
 
@@ -204,7 +204,7 @@ class UnknownSegment(_SegmentBase):
 # whole thing fits inside ruff's line-length budget without a noqa escape.
 
 BotSegment = Annotated[
-    PlainSegment
+    TextSegment
     | ImageSegment
     | AudioSegment
     | VideoSegment

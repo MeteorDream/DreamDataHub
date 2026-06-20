@@ -20,7 +20,8 @@ from hub import Hub, load_modules
 from utils.logger import init_logging
 
 logger = logging.getLogger("main")
-
+# httpx 设置为 warning 避免日志有大量的请求日志
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 def _load_config(path: Path) -> dict:
     if not path.exists():
