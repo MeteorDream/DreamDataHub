@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "aiomysql>=0.3.2",
+    "croniter>=6.2.2",
     "openai>=2.42.0",
     "pydantic>=2.13.4",
     "pytelegrambotapi>=4.34.0",

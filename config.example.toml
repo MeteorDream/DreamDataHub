@@ -50,3 +50,11 @@ base_url = "https://api.openai.com/v1"
 model = "gpt-4o-mini"
 system_prompt = "You are a helpful assistant."
 max_context_tokens = 64000
+
+# --- Util: Weather ----------------------------------------------------------
+# weather 工具类, 必须启用才能支持天气推送功能
+[module.weather]
+enable = true
+## scheduler 控制是否启用周期推送功能
+scheduler = false
+amap_key = "amap_key"

@@ -11,8 +11,8 @@ import html
 import json
 
 from telebot import util
-from telegram import Update, Bot, BotCommand
-from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters
+from telegram import Update, Bot, BotCommand, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters, ConversationHandler
 from telegram.constants import ParseMode
 
 from hub import Context
@@ -44,9 +44,11 @@ class DreamBotHandle(BaseTelegramHandle):
         self.app: Application = Application.builder().token(token).build()
         self.bot: Bot = self.app.bot
 
-        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_message))
         self.app.add_handler(CommandHandler("start", self.start))
         self.app.add_handler(CommandHandler("help", self.help))
+        self.app.add_handler(CommandHandler("location", self.get_location))
+        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_message))
+        self.app.add_handler(MessageHandler(filters.LOCATION, self.location_message))
         self.app.add_error_handler(self.error_handler)    # type: ignore
 
     async def initalize(self) -> None:
@@ -107,10 +109,10 @@ class DreamBotHandle(BaseTelegramHandle):
             user_id=str(user.id) if user else "",
             user_name=(user.full_name if user else "") or "",
             session_id=f"tg:{chat_id}",
-            session_name=update.effective_chat.title if update.effective_chat else "",
+            session_name=str(update.effective_chat.title) if update.effective_chat else "",
         )
         await self.ctx.publish(TELEGRAM_MESSAGE, event)
-        self.ctx.logger.info("[Telegram] User: %s chat: %s(%s) Text message: %s", user.username, chat_id, thread_id, msg.text)
+        self.ctx.logger.info("[Telegram] User: %s chat: %s(%s) Text message: %s", user.full_name, chat_id, thread_id, msg.text)
 
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Log the error and send a telegram message to notify the developer."""
@@ -160,3 +162,27 @@ class DreamBotHandle(BaseTelegramHandle):
             await self.bot.send_message(chat_id=chat_id, text=text, message_thread_id=message_thread_id)
         except Exception:  # noqa: BLE001
             self.ctx.logger.exception("telegram_bot: send_message failed")
+
+    async def location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        msg = update.effective_message
+        if msg is None or msg.location is None:
+            return
+        chat_id = update.effective_chat.id if update.effective_chat else 0
+        thread_id = update.message.message_thread_id if update.message and update.message.message_thread_id else ""
+        user = update.effective_user
+        location = msg.location
+        self.ctx.logger.info("[Telegram] User: %s chat: %s(%s) location message: %s", user.full_name, chat_id, thread_id, (location.latitude, location.longitude))
+        context.user_data["location"] = (location.latitude, location.longitude)
+
+    async def get_location(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.message:
+            return
+        location = context.user_data.get("location")
+        if not location:
+            await update.message.reply_text(
+                "You have not shared your location yet. Please share your location with me!"
+            )
+            return
+        await update.message.reply_text(
+            f"Your location is: {location}"
+        )
