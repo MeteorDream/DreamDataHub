@@ -23,6 +23,7 @@ logger = logging.getLogger("main")
 # httpx 设置为 warning 避免日志有大量的请求日志
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+
 def _load_config(path: Path) -> dict:
     if not path.exists():
         raise FileNotFoundError(f"config not found: {path}")
@@ -38,7 +39,7 @@ async def amain() -> None:
     init_logging(
         level=getattr(logging, hub_cfg.get("log_level", "INFO").upper(), logging.INFO),
         log_file=hub_cfg.get("log_file", "datahub.log"),
-        fmt="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
+        fmt="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
     )
     logger.info("DataHub starting (config=%s)", config_path.resolve())
 

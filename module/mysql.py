@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import ValidationError
 import aiomysql
+from pydantic import ValidationError
 
 from hub import Context, Module
 from hub.topics import DATABASE_WRITE
@@ -50,9 +50,11 @@ async def setup(ctx: Context) -> None:
 
     try:
         ctx.state.pool = await aiomysql.create_pool(
-            minsize=1, maxsize=ctx.state.pool_size, **ctx.state.dsn,
+            minsize=1,
+            maxsize=ctx.state.pool_size,
+            **ctx.state.dsn,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         ctx.logger.exception(
             "mysql: create_pool failed (host=%s db=%s); 模块降级",
             ctx.state.dsn["host"],
@@ -76,7 +78,7 @@ async def setup(ctx: Context) -> None:
             try:
                 await cur.execute(ddl)
                 ctx.logger.info("mysql: ensured table %s", name)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 ctx.logger.exception("mysql: ensure table failed: %s", name)
 
 
@@ -87,7 +89,7 @@ async def teardown(ctx: Context) -> None:
         try:
             pool.close()
             await pool.wait_closed()
-        except Exception:  # noqa: BLE001
+        except Exception:
             ctx.logger.exception("mysql: pool close error")
     ctx.logger.info("mysql: closed")
 
@@ -135,5 +137,5 @@ async def on_write(ctx: Context, payload: Any) -> None:
                 cur.lastrowid,
                 cur.rowcount,
             )
-    except Exception:  # noqa: BLE001
+    except Exception:
         ctx.logger.exception("mysql: insert failed table=%s", table)

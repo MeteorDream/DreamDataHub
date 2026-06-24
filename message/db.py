@@ -108,7 +108,7 @@ def _strip_optional(tp: Any) -> tuple[Any, bool]:
         if len(args) == 1:
             return args[0], True
     # PEP 604 X | None — 在 3.10+ 里 origin 是 types.UnionType
-    import types  # noqa: PLC0415
+    import types
 
     if isinstance(tp, types.UnionType):
         args = [a for a in get_args(tp) if a is not type(None)]
@@ -144,9 +144,7 @@ def _column_sql(name: str, annotation: Any, metadata: list[Any], is_pk: bool) ->
         inner = getattr(inner, "__origin__", inner)
 
     # 优先用 metadata 里的字符串元信息；这是用户给的显式 SQL 类型
-    sql_type: str | None = next(
-        (m for m in metadata if isinstance(m, str) and m.strip()), None
-    )
+    sql_type: str | None = next((m for m in metadata if isinstance(m, str) and m.strip()), None)
 
     if sql_type is None:
         # PEP 604 / typing 里 dict[str, Any] 这种 generic 用 origin 来匹配
@@ -190,9 +188,7 @@ def build_create_ddl(model: type[DBRecord]) -> str:
     pk = model.__primary_key__
     cols: list[str] = []
     for name, field in model.model_fields.items():
-        cols.append(
-            _column_sql(name, field.annotation, list(field.metadata), is_pk=name == pk)
-        )
+        cols.append(_column_sql(name, field.annotation, list(field.metadata), is_pk=name == pk))
     cols_sql = ",\n  ".join(cols)
     return (
         f"CREATE TABLE IF NOT EXISTS `{model.__table__}` (\n"
@@ -237,18 +233,15 @@ def build_insert(model: type[DBRecord], row: dict[str, Any]) -> tuple[str, tuple
         raise ValueError(f"build_insert: row produced no non-null columns for {model.__table__}")
 
     placeholders = ", ".join(["%s"] * len(cols))
-    sql = (
-        f"INSERT INTO `{model.__table__}` ({', '.join(cols)}) "
-        f"VALUES ({placeholders})"
-    )
+    sql = f"INSERT INTO `{model.__table__}` ({', '.join(cols)}) VALUES ({placeholders})"
     return sql, tuple(params)
 
 
 __all__ = [
+    "TABLES",
     "BotMessageRecord",
     "DBRecord",
     "LLMExchangeRecord",
-    "TABLES",
     "build_create_ddl",
     "build_insert",
     "model_columns",

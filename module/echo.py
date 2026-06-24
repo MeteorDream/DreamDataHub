@@ -71,7 +71,7 @@ async def _ticker(ctx: Context) -> None:
             await ctx.publish(IM_MESSAGE, event)
             try:
                 await asyncio.wait_for(ctx.hub_event.wait(), timeout=ctx.state.interval)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
     except asyncio.CancelledError:
         ctx.logger.debug("ticker cancelled")

@@ -19,8 +19,9 @@ import asyncio
 import contextlib
 import logging
 import signal
+from collections.abc import Coroutine
 from dataclasses import dataclass, field
-from typing import Any, Coroutine
+from typing import Any
 
 from hub.context import Context
 from hub.module import Handler, Module
@@ -44,7 +45,7 @@ class _Subscriber:
             await self.fn(self.ctx, payload)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self.ctx.logger.exception("handler %r on %r failed", self.fn.__name__, self.topic)
             # 二次发布 system.error 时再失败就不要无限套娃了
             if self.topic != SYSTEM_ERROR:
@@ -53,7 +54,7 @@ class _Subscriber:
                         SYSTEM_ERROR,
                         {"module": self.module_name, "topic": self.topic, "exc": repr(exc)},
                     )
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.exception("failed to publish system.error")
 
 
@@ -94,7 +95,9 @@ class Hub:
             logger.debug("publish %s: no subscribers", topic)
             return
         for sub in subs:
-            self._track(asyncio.create_task(sub.invoke(payload, self), name=f"{sub.module_name}:{topic}"))
+            self._track(
+                asyncio.create_task(sub.invoke(payload, self), name=f"{sub.module_name}:{topic}")
+            )
 
     def spawn(self, coro: Coroutine[Any, Any, Any], *, name: str) -> asyncio.Task[Any]:
         """注册长任务（被 Context.spawn 包装调用）。"""
@@ -207,5 +210,5 @@ class Hub:
                 logger.info("shutdown: %s.%s", bm.module.name, hook.__name__)
                 try:
                     await hook(bm.ctx)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.exception("shutdown hook failed: %s", bm.module.name)

@@ -21,11 +21,11 @@ __all__ = [
     "MusicSegment",
     "NodeSegment",
     "NodesSegment",
-    "TextSegment",
     "PokeSegment",
     "ReplySegment",
     "SegmentAdapter",
     "ShareSegment",
+    "TextSegment",
     "UnknownSegment",
     "VideoSegment",
 ]

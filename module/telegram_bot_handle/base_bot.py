@@ -1,11 +1,10 @@
-
 from __future__ import annotations
 
-import traceback
 import json
+import traceback
 
-from telegram import Update, Bot
-from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters
+from telegram import Bot, Update
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from hub import Context
 from hub.topics import TELEGRAM_MESSAGE
@@ -31,7 +30,7 @@ class BaseTelegramHandle:
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_message))
         self.app.add_handler(CommandHandler("start", self.start))
         self.app.add_handler(CommandHandler("help", self.help))
-        self.app.add_error_handler(self.error_handler)    # type: ignore
+        self.app.add_error_handler(self.error_handler)  # type: ignore
 
     async def initalize(self) -> None:
         await self.app.initialize()
@@ -49,13 +48,13 @@ class BaseTelegramHandle:
             await self.app.stop()
             await self.app.shutdown()
             self.ctx.logger.info("telegram_bot shutdown")
-        except Exception:  # noqa: BLE001
+        except Exception:
             self.ctx.logger.exception("telegram_bot: shutdown error")
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/start"""
         if not update.message:
-            return 
+            return
         user = update.message.from_user
         user_name = "Dear"
         if user:
@@ -67,9 +66,9 @@ class BaseTelegramHandle:
     async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/help"""
         if not update.message:
-            return 
+            return
         await update.message.reply_text(
-            f"Sorry! The developers of the bot did not leave help message"
+            "Sorry! The developers of the bot did not leave help message"
         )
 
     async def text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -95,7 +94,9 @@ class BaseTelegramHandle:
             session_name=update.effective_chat.title if update.effective_chat else "",
         )
         await self.ctx.publish(TELEGRAM_MESSAGE, event)
-        self.ctx.logger.info("[Telegram] User: %s chat: %s Text message: %s", user.username, chat_id, msg.text)
+        self.ctx.logger.info(
+            "[Telegram] User: %s chat: %s Text message: %s", user.username, chat_id, msg.text
+        )
 
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Log the error and send a telegram message to notify the developer."""
@@ -116,8 +117,8 @@ class BaseTelegramHandle:
             "An exception was raised while handling an update\n"
             f"update = {json.dumps(update_str, indent=2, ensure_ascii=False)}"
             "\n\n"
-            f"context.chat_data = {str(context.chat_data)}\n\n"
-            f"context.user_data = {str(context.user_data)}\n\n"
+            f"context.chat_data = {context.chat_data!s}\n\n"
+            f"context.user_data = {context.user_data!s}\n\n"
             f"{tb_string}"
         )
 
@@ -134,5 +135,5 @@ class BaseTelegramHandle:
             return
         try:
             await self.bot.send_message(chat_id=chat_id, text=text)
-        except Exception:  # noqa: BLE001
+        except Exception:
             self.ctx.logger.exception("telegram_bot: send_message failed")

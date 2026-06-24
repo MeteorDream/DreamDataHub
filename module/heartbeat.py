@@ -10,7 +10,7 @@ import asyncio
 import time
 
 from hub import Context, Module
-from hub.topics import SYSTEM_READY, SYSTEM_HEARTBEAT, SYSTEM_ERROR
+from hub.topics import SYSTEM_ERROR, SYSTEM_HEARTBEAT, SYSTEM_READY
 
 mod = Module("heartbeat")
 
@@ -33,9 +33,11 @@ async def teardown(ctx: Context) -> None:
 async def on_ready(ctx: Context, _payload) -> None:
     ctx.logger.info("system.ready received")
 
+
 @mod.on(SYSTEM_HEARTBEAT)
 async def on_heartbeat(ctx: Context, _payload) -> None:
     ctx.logger.info("system.heartbeat received: %s", _payload)
+
 
 @mod.on(SYSTEM_ERROR)
 async def on_error(ctx: Context, _payload) -> None:
@@ -47,15 +49,18 @@ async def _heartbeat(ctx: Context) -> None:
     try:
         while not ctx.hub_event.is_set():
             ctx.state.counter += 1
-            await ctx.publish(SYSTEM_HEARTBEAT, {
-                "count": ctx.state.counter,
-                "state": "running",
-                "message": "heartbeat running...",
-                "timestamp": time.time(),
-            })
+            await ctx.publish(
+                SYSTEM_HEARTBEAT,
+                {
+                    "count": ctx.state.counter,
+                    "state": "running",
+                    "message": "heartbeat running...",
+                    "timestamp": time.time(),
+                },
+            )
             try:
                 await asyncio.wait_for(ctx.hub_event.wait(), timeout=ctx.state.interval)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
     except asyncio.CancelledError:
         ctx.logger.debug("heartbeat cancelled")

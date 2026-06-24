@@ -9,22 +9,23 @@ loader 会扫描该 .py 的 globals 找到它。
 
     mod = Module("llm_openai")
 
+
     @mod.on_startup
-    async def setup(ctx: Context):
-        ...
+    async def setup(ctx: Context): ...
+
 
     @mod.on("im.message")
-    async def reply(event, ctx: Context):
-        ...
+    async def reply(event, ctx: Context): ...
+
 
     @mod.on_shutdown
-    async def teardown(ctx: Context):
-        ...
+    async def teardown(ctx: Context): ...
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from hub.context import Context

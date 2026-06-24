@@ -97,13 +97,13 @@ async def teardown(ctx: Context) -> None:
     if ws is not None:
         try:
             await ws.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     http = ctx.state.http
     if http is not None:
         try:
             await http.aclose()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     ctx.logger.info("im_qq: closed")
 
@@ -138,7 +138,7 @@ async def _send_reply(event: BotEvent, ctx: Context) -> None:
         return
     try:
         resp = await _call_action(ctx, "send_msg", params)
-    except (asyncio.TimeoutError, RuntimeError):
+    except (TimeoutError, RuntimeError):
         ctx.logger.exception("im_qq: send_msg failed")
         return
     if resp.get("status") == "ok":
@@ -164,7 +164,7 @@ async def _send_reply(event: BotEvent, ctx: Context) -> None:
 async def _recv_loop(ctx: Context) -> None:
     """连 WS、收帧、断线重连。整个 loop 直到 hub_event 被置位才退出。"""
     try:
-        import websockets  # noqa: PLC0415  延迟导入：模块未启用时无需依赖
+        import websockets
     except ImportError:
         ctx.logger.error("im_qq: websockets 未安装，请 `uv add websockets`")
         return
@@ -195,7 +195,7 @@ async def _recv_loop(ctx: Context) -> None:
                     await _on_ws_frame(raw, ctx)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             ctx.logger.warning("im_qq: ws error %s: %s", type(exc).__name__, exc)
         finally:
             ctx.state.ws = None
@@ -205,10 +205,8 @@ async def _recv_loop(ctx: Context) -> None:
             break
         ctx.logger.info("im_qq: reconnect in %.1fs", ctx.state.reconnect_interval)
         try:
-            await asyncio.wait_for(
-                ctx.hub_event.wait(), timeout=ctx.state.reconnect_interval
-            )
-        except asyncio.TimeoutError:
+            await asyncio.wait_for(ctx.hub_event.wait(), timeout=ctx.state.reconnect_interval)
+        except TimeoutError:
             pass
 
 
@@ -271,23 +269,18 @@ async def _on_message_event(ev: dict, ctx: Context) -> None:
     elif detail == "private":
         session_id = f"private:{user_id}"
         if user_id not in ctx.state.whitelist_users:
-            ctx.logger.debug(
-                "im_qq: msg.skip not_whitelisted user=%s mid=%s", user_id, message_id
-            )
+            ctx.logger.debug("im_qq: msg.skip not_whitelisted user=%s mid=%s", user_id, message_id)
             return
     else:
-        ctx.logger.debug(
-            "im_qq: msg.skip unsupported_detail=%s mid=%s", detail, message_id
-        )
+        ctx.logger.debug("im_qq: msg.skip unsupported_detail=%s mid=%s", detail, message_id)
         return
 
     # 段映射
     segments = await _onebot_to_segments(raw_segments, ctx, message_id)
 
     # @ 检测
-    is_mentioned = (
-        detail == "private"
-        or _is_mentioned(raw_segments, raw_text, self_user_id, ctx.state.bot_name)
+    is_mentioned = detail == "private" or _is_mentioned(
+        raw_segments, raw_text, self_user_id, ctx.state.bot_name
     )
     sub_type_label = "mentioned" if is_mentioned else "overhear"
 
@@ -357,9 +350,7 @@ async def _onebot_to_segments(
     return out
 
 
-async def _one_segment(
-    seg: dict, ctx: Context, message_id: str
-) -> BotSegment | None:
+async def _one_segment(seg: dict, ctx: Context, message_id: str) -> BotSegment | None:
     """OneBot 单段 → BotSegment；解析失败 fallback 到 UnknownSegment。"""
     t = seg.get("type")
     data = seg.get("data") or {}
@@ -468,15 +459,13 @@ async def _one_segment(
                 user_id=str(data.get("qq") or data.get("user_id") or ""),
                 poke_type=str(data.get("type") or "") or None,
             )
-    except Exception:  # noqa: BLE001
+    except Exception:
         ctx.logger.exception("im_qq: segment parse failed type=%s", t)
 
     return UnknownSegment(raw=seg)
 
 
-async def _build_image_segment(
-    data: dict, ctx: Context, message_id: str
-) -> ImageSegment:
+async def _build_image_segment(data: dict, ctx: Context, message_id: str) -> ImageSegment:
     """图片：优先用段内 url 直接下载；没 url 走 v12 get_file 兜底。"""
     seg_url = data.get("url") or ""
     if not seg_url and isinstance(data.get("file"), str) and data["file"].startswith("http"):
@@ -491,16 +480,15 @@ async def _build_image_segment(
     mime: str | None = None
 
     if seg_url:
-        data_uri, mime = await _download_image_to_data_uri(
-            seg_url, fallback_name, ctx, message_id
-        )
+        data_uri, mime = await _download_image_to_data_uri(seg_url, fallback_name, ctx, message_id)
     else:
         file_id = str(data.get("file_id") or data.get("file") or "")
         if file_id:
             data_uri, mime = await _fetch_image_via_get_file(file_id, ctx, message_id)
         else:
-            ctx.logger.warning("im_qq: image.no_source mid=%s keys=%s",
-                               message_id, sorted(data.keys()))
+            ctx.logger.warning(
+                "im_qq: image.no_source mid=%s keys=%s", message_id, sorted(data.keys())
+            )
 
     return ImageSegment(
         url=data_uri or seg_url or None,
@@ -519,13 +507,11 @@ async def _download_image_to_data_uri(
     http = ctx.state.http
     if http is None:
         try:
-            import httpx  # noqa: PLC0415
+            import httpx
         except ImportError:
             ctx.logger.error("im_qq: httpx 未安装，无法下载图片")
             return None, None
-        http = httpx.AsyncClient(
-            timeout=ctx.state.image_download_timeout, follow_redirects=True
-        )
+        http = httpx.AsyncClient(timeout=ctx.state.image_download_timeout, follow_redirects=True)
         ctx.state.http = http
 
     try:
@@ -534,10 +520,12 @@ async def _download_image_to_data_uri(
         resp.raise_for_status()
         content = resp.content
         dt = (time.perf_counter() - t0) * 1000
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         ctx.logger.warning(
             "im_qq: image.download_failed mid=%s url=%s err=%s",
-            message_id, url[:120], exc,
+            message_id,
+            url[:120],
+            exc,
         )
         return None, None
 
@@ -546,7 +534,10 @@ async def _download_image_to_data_uri(
     mime = ctype if ctype.startswith("image/") else _guess_image_mime_from_url(url, hint_name)
     ctx.logger.info(
         "im_qq: image.downloaded mid=%s in %.1fms bytes=%d mime=%s",
-        message_id, dt, len(content), mime,
+        message_id,
+        dt,
+        len(content),
+        mime,
     )
     return f"data:{mime};base64,{b64}", mime
 
@@ -556,19 +547,21 @@ async def _fetch_image_via_get_file(
 ) -> tuple[str | None, str | None]:
     """v12 兜底：get_file(type=data) 拿 base64。"""
     try:
-        resp = await _call_action(
-            ctx, "get_file", {"file_id": file_id, "type": "data"}
-        )
-    except (asyncio.TimeoutError, RuntimeError) as exc:
+        resp = await _call_action(ctx, "get_file", {"file_id": file_id, "type": "data"})
+    except (TimeoutError, RuntimeError) as exc:
         ctx.logger.warning(
             "im_qq: image.get_file_failed mid=%s file_id=%s err=%s",
-            message_id, file_id, exc,
+            message_id,
+            file_id,
+            exc,
         )
         return None, None
     if resp.get("status") != "ok":
         ctx.logger.warning(
             "im_qq: image.get_file_non_ok mid=%s file_id=%s retcode=%s",
-            message_id, file_id, resp.get("retcode"),
+            message_id,
+            file_id,
+            resp.get("retcode"),
         )
         return None, None
     d = resp.get("data") or {}
@@ -693,9 +686,7 @@ async def _call_action(
     loop = asyncio.get_running_loop()
     fut: asyncio.Future[dict] = loop.create_future()
     ctx.state.pending_actions[echo] = fut
-    payload = json.dumps(
-        {"action": action, "params": params, "echo": echo}, ensure_ascii=False
-    )
+    payload = json.dumps({"action": action, "params": params, "echo": echo}, ensure_ascii=False)
     try:
         await ws.send(payload)
     except Exception:

@@ -5,15 +5,28 @@
 
 from __future__ import annotations
 
-from typing import Any
-import traceback
 import html
 import json
+import traceback
 
 from telebot import util
-from telegram import Update, Bot, BotCommand, ReplyKeyboardMarkup, ReplyKeyboardRemove, BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats
-from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters, ConversationHandler
+from telegram import (
+    Bot,
+    BotCommand,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeAllPrivateChats,
+    BotCommandScopeDefault,
+    ReplyKeyboardRemove,
+    Update,
+)
 from telegram.constants import ParseMode
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from hub import Context
 from hub.topics import TELEGRAM_MESSAGE
@@ -22,11 +35,12 @@ from module.weather import Weather
 
 from .base_bot import BaseTelegramHandle
 
+
 class DreamBotHandle(BaseTelegramHandle):
     """DreamBot 实现
-    
+
     实现功能:
-    1. 
+    1.
     """
 
     DEVELOPER_CHAT_ID = -1003847258572
@@ -49,9 +63,10 @@ class DreamBotHandle(BaseTelegramHandle):
         self.app.add_handler(CommandHandler("help", self.help))
         self.app.add_handler(CommandHandler("location", self.get_location))
         self.app.add_handler(CommandHandler("weather", self.get_weather))
+        self.app.add_handler(CommandHandler("cancel", self.cancel))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_message))
         self.app.add_handler(MessageHandler(filters.LOCATION, self.location_message))
-        self.app.add_error_handler(self.error_handler)    # type: ignore
+        self.app.add_error_handler(self.error_handler)  # type: ignore
 
     async def initalize(self) -> None:
         await self.app.initialize()
@@ -65,7 +80,7 @@ class DreamBotHandle(BaseTelegramHandle):
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/start"""
         if not update.message:
-            return 
+            return
         user = update.message.from_user
         user_name = "Dear"
         if user:
@@ -77,10 +92,15 @@ class DreamBotHandle(BaseTelegramHandle):
     async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/help"""
         if not update.message:
-            return 
+            return
         await update.message.reply_text(
-            f"Sorry! The developers of the bot did not leave help message"
+            "Sorry! The developers of the bot did not leave help message"
         )
+
+    async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.message:
+            return
+        await update.message.reply_text("Success cancel.", reply_markup=ReplyKeyboardRemove())
 
     async def set_command(self):
         commands = [
@@ -88,11 +108,21 @@ class DreamBotHandle(BaseTelegramHandle):
             BotCommand("help", "Get bot help information"),
             BotCommand("location", "Get your last shared location"),
             BotCommand("weather", "Get weather information based on your last shared location"),
+            BotCommand("cancel", "Cancel the current operation"),
         ]
-        for scope_cls in (BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats):
+        for scope_cls in (
+            BotCommandScopeDefault,
+            BotCommandScopeAllPrivateChats,
+            BotCommandScopeAllGroupChats,
+        ):
             scope_name = scope_cls.__name__
             result = await self.bot.set_my_commands(commands, scope=scope_cls())
-            self.ctx.logger.info("telegram: set %d commands for scope %s result: %s", len(commands), scope_name, result)
+            self.ctx.logger.info(
+                "telegram: set %d commands for scope %s result: %s",
+                len(commands),
+                scope_name,
+                result,
+            )
 
     async def text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """消息投递到 TELEGRAM_MESSAGE"""
@@ -100,7 +130,11 @@ class DreamBotHandle(BaseTelegramHandle):
         if msg is None or msg.text is None:
             return
         chat_id = update.effective_chat.id if update.effective_chat else 0
-        thread_id = update.message.message_thread_id if update.message and update.message.message_thread_id else ""
+        thread_id = (
+            update.message.message_thread_id
+            if update.message and update.message.message_thread_id
+            else ""
+        )
         user = update.effective_user
         event = BotEvent(
             id=str(msg.message_id),
@@ -118,7 +152,13 @@ class DreamBotHandle(BaseTelegramHandle):
             session_name=str(update.effective_chat.title) if update.effective_chat else "",
         )
         await self.ctx.publish(TELEGRAM_MESSAGE, event)
-        self.ctx.logger.info("[Telegram] User: %s chat: %s(%s) Text message: %s", user.full_name, chat_id, thread_id, msg.text)
+        self.ctx.logger.info(
+            "[Telegram] User: %s chat: %s(%s) Text message: %s",
+            user.full_name,
+            chat_id,
+            thread_id,
+            msg.text,
+        )
 
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Log the error and send a telegram message to notify the developer."""
@@ -131,7 +171,6 @@ class DreamBotHandle(BaseTelegramHandle):
         if context.error:
             tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
             tb_string = "".join(tb_list)
-
 
         # Build the message with some markup and additional information about what happened.
         # You might need to add some logic to deal with messages longer than the 4096 character limit.
@@ -148,8 +187,8 @@ class DreamBotHandle(BaseTelegramHandle):
         # Finally, send the message
         for message_segment in util.smart_split(message, 4000):
             await context.bot.send_message(
-                chat_id=self.DEVELOPER_CHAT_ID, 
-                text=message_segment, 
+                chat_id=self.DEVELOPER_CHAT_ID,
+                text=message_segment,
                 parse_mode=ParseMode.HTML,
                 message_thread_id=self.DEVELOPER_MESSAGE_THREAD_ID,
             )
@@ -165,8 +204,10 @@ class DreamBotHandle(BaseTelegramHandle):
         if not text:
             return
         try:
-            await self.bot.send_message(chat_id=chat_id, text=text, message_thread_id=message_thread_id)
-        except Exception:  # noqa: BLE001
+            await self.bot.send_message(
+                chat_id=chat_id, text=text, message_thread_id=message_thread_id
+            )
+        except Exception:
             self.ctx.logger.exception("telegram_bot: send_message failed")
 
     async def location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -175,19 +216,33 @@ class DreamBotHandle(BaseTelegramHandle):
             self.ctx.logger.info("telegram_bot: location_message not message location, skip")
             return
         chat_id = update.effective_chat.id if update.effective_chat else 0
-        thread_id = update.message.message_thread_id if update.message and update.message.message_thread_id else ""
+        thread_id = (
+            update.message.message_thread_id
+            if update.message and update.message.message_thread_id
+            else ""
+        )
         user = update.effective_user
         location = msg.location
-        self.ctx.logger.info("[Telegram] User: %s chat: %s(%s) location message: %s", user.full_name, chat_id, thread_id, (location.latitude, location.longitude))
+        self.ctx.logger.info(
+            "[Telegram] User: %s chat: %s(%s) location message: %s",
+            user.full_name,
+            chat_id,
+            thread_id,
+            (location.latitude, location.longitude),
+        )
         context.user_data["location"] = (location.latitude, location.longitude)
-        await update.message.reply_text(f"Update Location success, Latitude: {location.latitude}, Longitude: {location.longitude}")
+        await update.message.reply_text(
+            f"Update Location success, Latitude: {location.latitude}, Longitude: {location.longitude}"
+        )
         msg, location_info = await Weather.amap_location(location.longitude, location.latitude)
         context.user_data["location_info"] = location_info
         if msg:
             await update.message.reply_text(f"Get address from location failed, message: {msg}")
         else:
             address = location_info.get("formatted_address", "未知")
-            await update.message.reply_text(f"Get address from location success, Address: {address}")
+            await update.message.reply_text(
+                f"Get address from location success, Address: {address}"
+            )
 
     async def get_location(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
@@ -210,13 +265,13 @@ class DreamBotHandle(BaseTelegramHandle):
             return
 
         location_info = context.user_data.get("location_info", {})
-        
+
         if not location_info:
             await update.message.reply_text(
                 "There is no location infomation in system, please send a location first."
             )
             return
-        
+
         country = location_info.get("addressComponent", {}).get("country")
         city = location_info.get("addressComponent", {}).get("city")
         province = location_info.get("addressComponent", {}).get("province")
@@ -224,10 +279,16 @@ class DreamBotHandle(BaseTelegramHandle):
 
         address = f"{country}{province}{city}{district}"
 
-        message, weather_info = await Weather.amap_weather(location_info.get("addressComponent", {}).get("adcode"))
+        message, weather_info = await Weather.amap_weather(
+            location_info.get("addressComponent", {}).get("adcode")
+        )
         if message:
-            await update.message.reply_text(f"Get weather from location failed, address: {address}, message: {message}")
+            await update.message.reply_text(
+                f"Get weather from location failed, address: {address}, message: {message}"
+            )
             return
 
-        weather_message = Weather.build_weather_message(weather_info, parse_mode="html", address=address)
-        await update.message.reply_html(weather_message) 
+        weather_message = Weather.build_weather_message(
+            weather_info, parse_mode="html", address=address
+        )
+        await update.message.reply_html(weather_message)

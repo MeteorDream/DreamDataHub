@@ -20,12 +20,11 @@ from message.bot import (
 )
 from module import im_qq
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 # 把 _download_image_to_data_uri 短路掉，避免单元测试真的去拉 multimedia.nt.qq.com.cn
-async def _no_download(url, hint_name, ctx, message_id):  # noqa: ARG001
+async def _no_download(url, hint_name, ctx, message_id):
     return None, None
 
 
@@ -86,9 +85,7 @@ def test_parse_data_json_image_message() -> None:
     ev = _load_sample("data.json")
     ctx = _make_ctx()
 
-    segments = asyncio.run(
-        im_qq._onebot_to_segments(ev["message"], ctx, str(ev["message_id"]))
-    )
+    segments = asyncio.run(im_qq._onebot_to_segments(ev["message"], ctx, str(ev["message_id"])))
 
     assert len(segments) == 1
     assert isinstance(segments[0], ImageSegment)
@@ -102,9 +99,7 @@ def test_parse_data2_json_reply_and_text() -> None:
     ev = _load_sample("data2.json")
     ctx = _make_ctx()
 
-    segments = asyncio.run(
-        im_qq._onebot_to_segments(ev["message"], ctx, str(ev["message_id"]))
-    )
+    segments = asyncio.run(im_qq._onebot_to_segments(ev["message"], ctx, str(ev["message_id"])))
 
     assert len(segments) == 2
     assert isinstance(segments[0], ReplySegment)
@@ -118,9 +113,7 @@ def test_napcat_raw_field_is_ignored_by_botevent() -> None:
     不影响构造。"""
     ev = _load_sample("data.json")
     ctx = _make_ctx()
-    segments = asyncio.run(
-        im_qq._onebot_to_segments(ev["message"], ctx, str(ev["message_id"]))
-    )
+    segments = asyncio.run(im_qq._onebot_to_segments(ev["message"], ctx, str(ev["message_id"])))
     # 直接构造一个 BotEvent，确保字段都能填上
     e = BotEvent(
         id=str(ev["message_id"]),
@@ -179,15 +172,23 @@ def test_overhear_when_no_at() -> None:
 
 def test_build_send_group_msg() -> None:
     event = BotEvent(
-        id="r1", platform="qq", time=0.0, type="message",
-        detail_type="group", sub_type="", message_id="r1",
+        id="r1",
+        platform="qq",
+        time=0.0,
+        type="message",
+        detail_type="group",
+        sub_type="",
+        message_id="r1",
         message=[
             ReplySegment(message_id="123"),
             AtSegment(user_id="2423428733"),
             PlainSegment(text=" 你好喵～"),
         ],
-        bot_id="1228531751", user_id="1228531751", user_name="bot",
-        session_id="group:1098814820", session_name="の、梦蝶",
+        bot_id="1228531751",
+        user_id="1228531751",
+        user_name="bot",
+        session_id="group:1098814820",
+        session_name="の、梦蝶",
     )
     params = im_qq._build_send_msg_params(event)
     assert params["message_type"] == "group"
@@ -201,11 +202,19 @@ def test_build_send_group_msg() -> None:
 
 def test_build_send_private_msg() -> None:
     event = BotEvent(
-        id="r2", platform="qq", time=0.0, type="message",
-        detail_type="private", sub_type="", message_id="r2",
+        id="r2",
+        platform="qq",
+        time=0.0,
+        type="message",
+        detail_type="private",
+        sub_type="",
+        message_id="r2",
         message=[PlainSegment(text="hi")],
-        bot_id="1228531751", user_id="1228531751", user_name="bot",
-        session_id="private:2423428733", session_name="梦蝶",
+        bot_id="1228531751",
+        user_id="1228531751",
+        user_name="bot",
+        session_id="private:2423428733",
+        session_name="梦蝶",
     )
     params = im_qq._build_send_msg_params(event)
     assert params["message_type"] == "private"
@@ -215,11 +224,19 @@ def test_build_send_private_msg() -> None:
 
 def test_build_send_unsupported_session_raises() -> None:
     event = BotEvent(
-        id="r3", platform="echo", time=0.0, type="message",
-        detail_type="private", sub_type="", message_id="r3",
+        id="r3",
+        platform="echo",
+        time=0.0,
+        type="message",
+        detail_type="private",
+        sub_type="",
+        message_id="r3",
         message=[PlainSegment(text="hi")],
-        bot_id="0", user_id="0", user_name="echo",
-        session_id="echo:self", session_name="echo",
+        bot_id="0",
+        user_id="0",
+        user_name="echo",
+        session_id="echo:self",
+        session_name="echo",
     )
     try:
         im_qq._build_send_msg_params(event)

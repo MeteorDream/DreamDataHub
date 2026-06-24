@@ -23,7 +23,6 @@ from message.db import (
 )
 from module import mysql as mysql_mod
 
-
 # ---------------------------------------------------------------------------
 # DDL 反射
 # ---------------------------------------------------------------------------
@@ -45,6 +44,7 @@ def test_create_ddl_for_llm_exchange() -> None:
 
 def test_create_ddl_optional_field_uses_null() -> None:
     """Optional 字段 → NULL；required → NOT NULL。"""
+
     class T1(DBRecord):
         __table__ = "t1"
         id: int | None = None
@@ -83,13 +83,16 @@ def test_create_ddl_custom_primary_key() -> None:
 
 
 def test_insert_uses_placeholder_and_skips_none() -> None:
-    sql, params = build_insert(LLMExchangeRecord, {
-        "session_id": "qq:group:123",
-        "prompt": "hi",
-        "response": "hello",
-        "model": "gpt-4o",
-        "platform": "qq",
-    })
+    sql, params = build_insert(
+        LLMExchangeRecord,
+        {
+            "session_id": "qq:group:123",
+            "prompt": "hi",
+            "response": "hello",
+            "model": "gpt-4o",
+            "platform": "qq",
+        },
+    )
     # id / created_at 都是 None → 跳过让 DB 走默认
     assert "`id`" not in sql
     assert "`created_at`" not in sql
@@ -101,15 +104,18 @@ def test_insert_uses_placeholder_and_skips_none() -> None:
 
 def test_insert_drops_unknown_payload_keys() -> None:
     """payload 里多余的键被 Pydantic extra='ignore' 丢掉，不会进 SQL。"""
-    sql, params = build_insert(LLMExchangeRecord, {
-        "session_id": "x",
-        "prompt": "y",
-        "response": "z",
-        "model": "m",
-        "platform": "p",
-        "drop_table": "DROP TABLE users;--",  # 注入企图被 model 丢掉
-        "another_extra": 42,
-    })
+    sql, params = build_insert(
+        LLMExchangeRecord,
+        {
+            "session_id": "x",
+            "prompt": "y",
+            "response": "z",
+            "model": "m",
+            "platform": "p",
+            "drop_table": "DROP TABLE users;--",  # 注入企图被 model 丢掉
+            "another_extra": 42,
+        },
+    )
     assert "drop_table" not in sql
     assert "another_extra" not in sql
     assert params == ("x", "y", "z", "m", "p")
@@ -117,6 +123,7 @@ def test_insert_drops_unknown_payload_keys() -> None:
 
 def test_insert_with_only_none_columns_raises() -> None:
     """全是 None 时 build_insert 抛 ValueError。"""
+
     class T4(DBRecord):
         __table__ = "t4"
         id: int | None = None
@@ -130,13 +137,16 @@ def test_insert_validation_error_propagates() -> None:
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
-        build_insert(LLMExchangeRecord, {
-            "session_id": "x",
-            "prompt": ["not", "a", "string"],  # type: ignore[dict-item]
-            "response": "z",
-            "model": "m",
-            "platform": "p",
-        })
+        build_insert(
+            LLMExchangeRecord,
+            {
+                "session_id": "x",
+                "prompt": ["not", "a", "string"],  # type: ignore[dict-item]
+                "response": "z",
+                "model": "m",
+                "platform": "p",
+            },
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -164,12 +174,19 @@ def test_bot_message_from_event_round_trip() -> None:
     """BotEvent → BotMessageRecord.from_event → build_insert 链路顺畅，
     message 列被 json.dumps 序列化成字符串。"""
     evt = BotEvent(
-        id="evt-1", platform="qq", time=1781666540.5,
-        type="message", detail_type="group", sub_type="mentioned",
+        id="evt-1",
+        platform="qq",
+        time=1781666540.5,
+        type="message",
+        detail_type="group",
+        sub_type="mentioned",
         message_id="12345",
         message=[PlainSegment(text="hello"), AtSegment(user_id="999")],
-        bot_id="1228531751", user_id="2423428733", user_name="梦蝶",
-        session_id="qq:group:1098814820", session_name="の、梦蝶",
+        bot_id="1228531751",
+        user_id="2423428733",
+        user_name="梦蝶",
+        session_id="qq:group:1098814820",
+        session_name="の、梦蝶",
     )
     record = BotMessageRecord.from_event(evt)
     assert record.id == "evt-1"
@@ -194,10 +211,19 @@ def test_bot_message_from_event_round_trip() -> None:
 def test_bot_message_json_serialization_handles_strenum() -> None:
     """BotSegment.type 是 StrEnum，json.dumps 时通过 default=str 兜底。"""
     evt = BotEvent(
-        id="x", platform="qq", time=0.0,
-        type="message", detail_type="private", sub_type="",
-        message_id="x", message=[PlainSegment(text="hi")],
-        bot_id="0", user_id="0", user_name="", session_id="private:0", session_name="",
+        id="x",
+        platform="qq",
+        time=0.0,
+        type="message",
+        detail_type="private",
+        sub_type="",
+        message_id="x",
+        message=[PlainSegment(text="hi")],
+        bot_id="0",
+        user_id="0",
+        user_name="",
+        session_id="private:0",
+        session_name="",
     )
     sql, params = build_insert(BotMessageRecord, BotMessageRecord.from_event(evt).model_dump())
     msg_json = params[7]
@@ -231,10 +257,15 @@ def test_on_write_drops_non_dict_payload() -> None:
     asyncio.run(mysql_mod.on_write(ctx, {}))
     asyncio.run(mysql_mod.on_write(ctx, {"table": "llm_exchange", "row": "bad"}))
     asyncio.run(mysql_mod.on_write(ctx, {"table": "no_such_table", "row": {}}))
-    asyncio.run(mysql_mod.on_write(
-        ctx,
-        {"table": "llm_exchange", "row": {"prompt": "x", "response": "y", "model": "m", "platform": "p"}},
-    ))  # pool=None → drop
+    asyncio.run(
+        mysql_mod.on_write(
+            ctx,
+            {
+                "table": "llm_exchange",
+                "row": {"prompt": "x", "response": "y", "model": "m", "platform": "p"},
+            },
+        )
+    )  # pool=None → drop
 
 
 def test_on_write_with_fake_pool_executes_insert() -> None:

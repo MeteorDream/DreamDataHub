@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Coroutine
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Coroutine
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from hub.core import Hub
@@ -19,7 +20,7 @@ if TYPE_CHECKING:
 class Context:
     """暴露给模块的运行时门面。一个模块对应一个 Context 实例。"""
 
-    __slots__ = ("_hub", "name", "config", "logger", "state", "hub_event")
+    __slots__ = ("_hub", "config", "hub_event", "logger", "name", "state")
 
     def __init__(
         self,
@@ -39,7 +40,9 @@ class Context:
         """投递一条事件到总线。立即返回（fire-and-forget）。"""
         await self._hub.publish(topic, payload)
 
-    def spawn(self, coro: Coroutine[Any, Any, Any], *, name: str | None = None) -> asyncio.Task[Any]:
+    def spawn(
+        self, coro: Coroutine[Any, Any, Any], *, name: str | None = None
+    ) -> asyncio.Task[Any]:
         """注册一个长任务到 Hub 的 TaskGroup。
 
         返回 Task 便于模块自己持有/取消，但**不需要** await — Hub 会在 shutdown

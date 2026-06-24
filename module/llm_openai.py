@@ -21,7 +21,7 @@ mod = Module("llm_openai")
 @mod.on_startup
 async def setup(ctx: Context) -> None:
     try:
-        from openai import AsyncOpenAI  # noqa: PLC0415
+        from openai import AsyncOpenAI
     except ImportError:
         ctx.logger.error("llm_openai: 未安装 openai；`uv add openai`")
         ctx.state.client = None
@@ -43,7 +43,7 @@ async def teardown(ctx: Context) -> None:
     if client is not None:
         try:
             await client.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
 
@@ -72,7 +72,7 @@ async def reply(ctx: Context, event: BotEvent) -> None:
             model=ctx.state.model,
             messages=history,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         ctx.logger.exception("llm_openai: chat.completions failed")
         return
 

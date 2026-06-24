@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-
 from hub import Context, Module
 from hub.topics import TELEGRAM_REPLY
 from message.bot import BotEvent
@@ -19,6 +18,7 @@ mod = Module("telegram_bot")
 
 DEVELOPER_CHAT_ID = -5579430112
 
+
 @mod.on_startup
 async def setup(ctx: Context) -> None:
 
@@ -26,8 +26,9 @@ async def setup(ctx: Context) -> None:
     ctx.state.bot = bot
     if not bot.enable:
         return
-    
+
     await bot.initalize()
+
 
 @mod.on_shutdown
 async def teardown(ctx: Context) -> None:
@@ -38,4 +39,3 @@ async def teardown(ctx: Context) -> None:
 async def on_reply_direct(ctx: Context, event: BotEvent) -> None:
     """业务方显式定向到 Telegram 时使用。"""
     await ctx.state.bot.send_message(event)
-
