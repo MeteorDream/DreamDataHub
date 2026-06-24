@@ -57,4 +57,11 @@ max_context_tokens = 64000
 enabled = true
 ## scheduler 控制是否启用周期推送功能
 scheduler = false
+# 支持往多个 im 通道发送
+platform = ["telegram"]
+chat_id = [""]
+sub_type = [""]
+message_type = [""]
+# 第三方获取 weather 的平台配置
+# 高德
 amap_key = "amap_key"

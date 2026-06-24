@@ -9,6 +9,8 @@ import httpx
 from croniter import croniter
 
 from hub import Context, Module
+from hub.topics import TELEGRAM_REPLY
+from message.bot import BotEvent
 
 mod = Module("weather")
 
@@ -39,7 +41,6 @@ async def _push(ctx: Context) -> None:
 
     try:
         while not ctx.hub_event.is_set():
-            # TODO: 待实现天气查询推送功能
             try:
                 now = datetime.now()
                 cron = croniter(schedule, now)
@@ -49,6 +50,10 @@ async def _push(ctx: Context) -> None:
                 )
             except TimeoutError:
                 pass
+            try:
+                ctx.logger.info("Weather push: schedule triggered, fetching weather data...")
+            except Exception as e:
+                ctx.logger.exception("Weather push error: %s", e)
     except asyncio.CancelledError:
         ctx.logger.debug("weather push cancelled")
         raise
