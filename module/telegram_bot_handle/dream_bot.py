@@ -11,13 +11,14 @@ import html
 import json
 
 from telebot import util
-from telegram import Update, Bot, BotCommand, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, Bot, BotCommand, ReplyKeyboardMarkup, ReplyKeyboardRemove, BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters, ConversationHandler
 from telegram.constants import ParseMode
 
 from hub import Context
 from hub.topics import TELEGRAM_MESSAGE
 from message.bot import BotEvent, TextSegment
+from module.weather import Weather
 
 from .base_bot import BaseTelegramHandle
 
@@ -47,6 +48,7 @@ class DreamBotHandle(BaseTelegramHandle):
         self.app.add_handler(CommandHandler("start", self.start))
         self.app.add_handler(CommandHandler("help", self.help))
         self.app.add_handler(CommandHandler("location", self.get_location))
+        self.app.add_handler(CommandHandler("weather", self.get_weather))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_message))
         self.app.add_handler(MessageHandler(filters.LOCATION, self.location_message))
         self.app.add_error_handler(self.error_handler)    # type: ignore
@@ -84,9 +86,13 @@ class DreamBotHandle(BaseTelegramHandle):
         commands = [
             BotCommand("start", "First enter and get hello message"),
             BotCommand("help", "Get bot help information"),
+            BotCommand("location", "Get your last shared location"),
+            BotCommand("weather", "Get weather information based on your last shared location"),
         ]
-        await self.bot.set_my_commands(commands)
-        self.ctx.logger.info("telegram: set %d commands success", len(commands))
+        for scope_cls in (BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats):
+            scope_name = scope_cls.__name__
+            result = await self.bot.set_my_commands(commands, scope=scope_cls())
+            self.ctx.logger.info("telegram: set %d commands for scope %s result: %s", len(commands), scope_name, result)
 
     async def text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """消息投递到 TELEGRAM_MESSAGE"""
@@ -166,6 +172,7 @@ class DreamBotHandle(BaseTelegramHandle):
     async def location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         msg = update.effective_message
         if msg is None or msg.location is None:
+            self.ctx.logger.info("telegram_bot: location_message not message location, skip")
             return
         chat_id = update.effective_chat.id if update.effective_chat else 0
         thread_id = update.message.message_thread_id if update.message and update.message.message_thread_id else ""
@@ -173,9 +180,18 @@ class DreamBotHandle(BaseTelegramHandle):
         location = msg.location
         self.ctx.logger.info("[Telegram] User: %s chat: %s(%s) location message: %s", user.full_name, chat_id, thread_id, (location.latitude, location.longitude))
         context.user_data["location"] = (location.latitude, location.longitude)
+        await update.message.reply_text(f"Update Location success, Latitude: {location.latitude}, Longitude: {location.longitude}")
+        msg, location_info = await Weather.amap_location(location.longitude, location.latitude)
+        context.user_data["location_info"] = location_info
+        if msg:
+            await update.message.reply_text(f"Get address from location failed, message: {msg}")
+        else:
+            address = location_info.get("formatted_address", "未知")
+            await update.message.reply_text(f"Get address from location success, Address: {address}")
 
     async def get_location(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
+            self.ctx.logger.info("telegram_bot: get location don't have message, skip")
             return
         location = context.user_data.get("location")
         if not location:
@@ -183,6 +199,35 @@ class DreamBotHandle(BaseTelegramHandle):
                 "You have not shared your location yet. Please share your location with me!"
             )
             return
+        address = context.user_data.get("location_info", {}).get("formatted_address", "未知")
         await update.message.reply_text(
-            f"Your location is: {location}"
+            f"Your current location as Latitude: {location[0]}, Longitude: {location[1]}, Address: {address}"
         )
+
+    async def get_weather(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.message:
+            self.ctx.logger.info("telegram_bot: get weather don't have message, skip")
+            return
+
+        location_info = context.user_data.get("location_info", {})
+        
+        if not location_info:
+            await update.message.reply_text(
+                "There is no location infomation in system, please send a location first."
+            )
+            return
+        
+        country = location_info.get("addressComponent", {}).get("country")
+        city = location_info.get("addressComponent", {}).get("city")
+        province = location_info.get("addressComponent", {}).get("province")
+        district = location_info.get("addressComponent", {}).get("district")
+
+        address = f"{country}{province}{city}{district}"
+
+        message, weather_info = await Weather.amap_weather(location_info.get("addressComponent", {}).get("adcode"))
+        if message:
+            await update.message.reply_text(f"Get weather from location failed, address: {address}, message: {message}")
+            return
+
+        weather_message = Weather.build_weather_message(weather_info, parse_mode="html", address=address)
+        await update.message.reply_html(weather_message) 
