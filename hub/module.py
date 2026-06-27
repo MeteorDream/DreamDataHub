@@ -37,7 +37,7 @@ Lifecycle = Callable[["Context"], Awaitable[None]]
 
 
 class Module:
-    """模块声明对象 — 收集 handler 和钩子，运行时由 Hub 绑定到 Context。"""
+    """模块声明对象 — 收集 handler、钩子、能力声明。"""
 
     def __init__(self, name: str) -> None:
         if not name or not name.replace("_", "").isalnum():
@@ -46,6 +46,7 @@ class Module:
         self._handlers: dict[str, list[Handler]] = {}
         self._startup: list[Lifecycle] = []
         self._shutdown: list[Lifecycle] = []
+        self._provides: dict[str, Handler] = {}
         # 由 loader 注入；运行时由 Hub 读取
         self._config: dict[str, Any] = {}
 
@@ -56,6 +57,25 @@ class Module:
 
         def decorator(fn: Handler) -> Handler:
             self._handlers.setdefault(topic, []).append(fn)
+            return fn
+
+        return decorator
+
+    def provides(self, capability: str) -> Callable[[Handler], Handler]:
+        """声明模块提供的能力，可被 workflow 或其他模块通过 ``invoke`` 调用。
+
+        能力名使用点分命名，例如 ``weather.forecast``、``llm.chat``。
+        同一能力名只能被一个模块声明（全局唯一）。
+
+        用法::
+
+            @mod.provides("weather.forecast")
+            async def my_forecast(ctx: Context, params: dict) -> dict:
+                ...
+        """
+
+        def decorator(fn: Handler) -> Handler:
+            self._provides[capability] = fn
             return fn
 
         return decorator
@@ -74,6 +94,10 @@ class Module:
 
     def bind_config(self, config: dict[str, Any]) -> None:
         self._config = dict(config)
+
+    @property
+    def capabilities(self) -> dict[str, Handler]:
+        return dict(self._provides)
 
     @property
     def handlers(self) -> dict[str, list[Handler]]:

@@ -15,7 +15,7 @@ from message.bot import (
     AtSegment,
     BotEvent,
     ImageSegment,
-    PlainSegment,
+    TextSegment,
     ReplySegment,
 )
 from module import im_qq
@@ -94,7 +94,7 @@ def test_parse_data_json_image_message() -> None:
 
 
 def test_parse_data2_json_reply_and_text() -> None:
-    """data2.json：reply + text 段。解析得 [ReplySegment, PlainSegment]，
+    """data2.json：reply + text 段。解析得 [ReplySegment, TextSegment]，
     raw_message 里的 [CQ:reply,id=...] 不会重复出现。"""
     ev = _load_sample("data2.json")
     ctx = _make_ctx()
@@ -104,7 +104,7 @@ def test_parse_data2_json_reply_and_text() -> None:
     assert len(segments) == 2
     assert isinstance(segments[0], ReplySegment)
     assert segments[0].message_id == "574064206"
-    assert isinstance(segments[1], PlainSegment)
+    assert isinstance(segments[1], TextSegment)
     assert segments[1].text == "引用"
 
 
@@ -182,7 +182,7 @@ def test_build_send_group_msg() -> None:
         message=[
             ReplySegment(message_id="123"),
             AtSegment(user_id="2423428733"),
-            PlainSegment(text=" 你好喵～"),
+            TextSegment(text=" 你好喵～"),
         ],
         bot_id="1228531751",
         user_id="1228531751",
@@ -209,7 +209,7 @@ def test_build_send_private_msg() -> None:
         detail_type="private",
         sub_type="",
         message_id="r2",
-        message=[PlainSegment(text="hi")],
+        message=[TextSegment(text="hi")],
         bot_id="1228531751",
         user_id="1228531751",
         user_name="bot",
@@ -231,7 +231,7 @@ def test_build_send_unsupported_session_raises() -> None:
         detail_type="private",
         sub_type="",
         message_id="r3",
-        message=[PlainSegment(text="hi")],
+        message=[TextSegment(text="hi")],
         bot_id="0",
         user_id="0",
         user_name="echo",

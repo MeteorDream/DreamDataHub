@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from hub import Context, Module
 from hub.topics import IM_MESSAGE, IM_REPLY, LLM_EXCHANGE
-from message.bot import BotEvent, PlainSegment
+from message.bot import BotEvent, TextSegment
 
 mod = Module("llm_openai")
 
@@ -92,7 +92,7 @@ async def reply(ctx: Context, event: BotEvent) -> None:
         detail_type=event.detail_type,
         sub_type="",
         message_id=f"reply:{event.message_id}",
-        message=[PlainSegment(text=answer)],
+        message=[TextSegment(text=answer)],
         bot_id=event.bot_id,
         user_id=event.bot_id,
         user_name="bot",
@@ -111,6 +111,33 @@ async def reply(ctx: Context, event: BotEvent) -> None:
     )
 
 
+@mod.provides("llm.chat")
+async def chat_capability(ctx: Context, params: dict) -> dict:
+    """提供 LLM 对话能力（workflow 可调用）。
+
+    params:
+        messages: list[dict] — OpenAI 格式的消息列表
+        model: str | None — 可覆盖默认模型
+
+    returns:
+        {"reply": str, "model": str}
+    """
+    if ctx.state.client is None:
+        raise RuntimeError("llm_openai: client not initialized")
+    messages = params.get("messages", [])
+    model = params.get("model", ctx.state.model)
+    try:
+        resp = await ctx.state.client.chat.completions.create(
+            model=model,
+            messages=messages,
+        )
+    except Exception:
+        ctx.logger.exception("llm_openai: chat capability failed")
+        raise
+    text = resp.choices[0].message.content or ""
+    return {"reply": text, "model": model}
+
+
 def _extract_text(event: BotEvent) -> str:
-    parts = [seg.text for seg in event.message if seg.type == "Plain"]  # type: ignore[attr-defined]
+    parts = [seg.text for seg in event.message if seg.type == "Text"]
     return "".join(parts).strip()

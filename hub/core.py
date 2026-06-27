@@ -1,4 +1,4 @@
-"""Hub — 总线、生命周期、后台任务持有者。
+"""Hub — 总线、生命周期、能力注册、Workflow 管理。
 
 职责：
 - 维护 ``topic → [Subscriber]`` 路由表
@@ -6,6 +6,9 @@
 - 启停顺序：startup 顺序、shutdown LIFO
 - SIGINT/SIGTERM：取消所有后台任务，运行 shutdown 钩子，干净退出
 - 异常隔离：handler 异常**不**冒泡，转为 ``system.error`` 事件 + 日志
+- 能力注册与调用：模块通过 ``@mod.provides("name")`` 声明能力，workflow 通过
+  ``invoke_capability()`` 调用
+- Workflow 管理：支持 topic 触发和模块主动触发两种方式
 
 实现说明：故意**不**使用 ``asyncio.TaskGroup`` —— 在 TaskGroup 中任何一个
 任务异常都会取消整组，与「单个 handler 崩了不能拖死 hub」相冲突。我们用
@@ -19,15 +22,28 @@ import asyncio
 import contextlib
 import logging
 import signal
+import uuid
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from hub.context import Context
 from hub.module import Handler, Module
 from hub.topics import SYSTEM_ERROR, SYSTEM_READY
+from hub.workflow_context import WorkflowContext
+
+if TYPE_CHECKING:
+    from hub.workflow import Workflow
 
 logger = logging.getLogger("hub")
+
+
+class CapabilityNotFoundError(LookupError):
+    """调用的能力不存在。"""
+
+
+class WorkflowNotFoundError(LookupError):
+    """启动的 workflow 不存在。"""
 
 
 @dataclass
@@ -79,11 +95,21 @@ class Hub:
         self._shutdown_event = asyncio.Event()
         self._stopping = False
 
+        # 能力注册表：capability_name → (module_name, handler_fn)
+        self._capabilities: dict[str, tuple[str, Handler]] = {}
+        # 模块名 → Context 的快速索引（供能力调用时查找 ctx）
+        self._module_contexts: dict[str, Context] = {}
+        # Workflow 注册
+        self._workflow_topic_subs: dict[str, list[tuple[int, Workflow]]] = {}
+        # topic → [(绑定序号, workflow)]
+        self._workflows_by_name: dict[str, Workflow] = {}
+
     # ---- 公开 API（给 Context / 主程序）---------------------------------
 
     async def publish(self, topic: str, payload: Any) -> None:
         """投递事件到 topic。立即返回；每个订阅者各起一个 task。
 
+        除了普通的 topic 订阅者，还会触发注册在 topic 上的 workflow。
         无订阅者：DEBUG 日志（如 ``llm.exchange`` 这类可选事件常无订阅者）。
         关停中或已停：丢弃，DEBUG 日志。
         """
@@ -91,13 +117,23 @@ class Hub:
             logger.debug("publish %s: hub not running, drop", topic)
             return
         subs = self._subs.get(topic)
-        if not subs:
-            logger.debug("publish %s: no subscribers", topic)
-            return
-        for sub in subs:
-            self._track(
-                asyncio.create_task(sub.invoke(payload, self), name=f"{sub.module_name}:{topic}")
-            )
+        if subs:
+            for sub in subs:
+                self._track(
+                    asyncio.create_task(sub.invoke(payload, self), name=f"{sub.module_name}:{topic}")
+                )
+        # 触发 workflow
+        wf_entries = self._workflow_topic_subs.get(topic)
+        if wf_entries:
+            for _, wf in wf_entries:
+                self._track(
+                    asyncio.create_task(
+                        self._dispatch_workflow(wf, topic, payload),
+                        name=f"workflow:{wf.name}",
+                    )
+                )
+        if not subs and not wf_entries:
+            logger.debug("publish %s: no subscribers or workflows", topic)
 
     def spawn(self, coro: Coroutine[Any, Any, Any], *, name: str) -> asyncio.Task[Any]:
         """注册长任务（被 Context.spawn 包装调用）。"""
@@ -115,6 +151,11 @@ class Hub:
             raise ValueError(f"duplicate module: {module.name}")
         ctx = Context(self, module.name, module.config, self._shutdown_event)
         self._bound.append(_BoundModule(module=module, ctx=ctx))
+        # 建立模块名 → Context 索引
+        self._module_contexts[module.name] = ctx
+        # 注册模块声明的能力
+        for cap_name, cap_fn in module.capabilities.items():
+            self.register_capability(cap_name, module.name, cap_fn)
 
     # ---- 主循环 ---------------------------------------------------------
 
@@ -154,6 +195,144 @@ class Hub:
     def stop(self) -> None:
         """编程式停机（测试 / REPL 用）。"""
         self._request_stop()
+
+    # ---- 能力注册与调用 ------------------------------------------------
+
+    def register_capability(
+        self, capability: str, module_name: str, fn: Handler
+    ) -> None:
+        """注册模块提供的能力。
+
+        能力名全局唯一，重复注册会抛出 ValueError。
+        """
+        if capability in self._capabilities:
+            existing = self._capabilities[capability][0]
+            raise ValueError(
+                f"capability {capability!r} already registered by {existing!r}, "
+                f"cannot register by {module_name!r}"
+            )
+        self._capabilities[capability] = (module_name, fn)
+        logger.debug("capability %s registered by %s", capability, module_name)
+
+    async def invoke_capability(
+        self, capability: str, params: Any = None, *, trace_id: str = ""
+    ) -> Any:
+        """调用模块提供的能力。
+
+        参数:
+            capability: 能力名称，如 ``"weather.forecast"``
+            params: 传给能力 handler 的参数
+            trace_id: 链路追踪 ID
+
+        返回:
+            能力 handler 的返回值
+
+        异常:
+            CapabilityNotFoundError: 能力未注册
+        """
+        entry = self._capabilities.get(capability)
+        if not entry:
+            raise CapabilityNotFoundError(
+                f"capability {capability!r} not found; "
+                f"registered: {sorted(self._capabilities)}"
+            )
+        module_name, fn = entry
+        ctx = self._module_contexts.get(module_name)
+        if ctx is None:
+            raise RuntimeError(
+                f"module {module_name!r} has no context (capability {capability!r})"
+            )
+        if trace_id:
+            logger.debug("[%s] invoke %s from %s", trace_id, capability, module_name)
+        try:
+            return await fn(ctx, params)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[%s] capability %s failed", trace_id, capability)
+            raise
+
+    # ---- Workflow 管理 -------------------------------------------------
+
+    def register_workflow(self, workflow: Workflow) -> None:
+        """注册一个 workflow。
+
+        - 如果 ``subscribe`` 不为空，会绑定到对应 topic(s)，消息到达时自动触发
+        - 其他模块可通过 ``start_workflow()`` 主动触发
+        """
+        if workflow.name in self._workflows_by_name:
+            raise ValueError(f"workflow {workflow.name!r} already registered")
+        self._workflows_by_name[workflow.name] = workflow
+        logger.info("workflow %s registered", workflow.name)
+
+        # 绑定 topic
+        topics: list[str] = []
+        if isinstance(workflow.subscribe, str):
+            if workflow.subscribe:
+                topics = [workflow.subscribe]
+        else:
+            topics = list(workflow.subscribe)
+
+        bind_idx = len(self._workflows_by_name)
+        for topic in topics:
+            self._workflow_topic_subs.setdefault(topic, []).append((bind_idx, workflow))
+            logger.info("  -> subscribe topic %s", topic)
+
+    async def start_workflow(self, name: str, params: Any = None) -> Any:
+        """主动触发一个 workflow 并等待执行结果。
+
+        参数:
+            name: Workflow 名称
+            params: 传给 workflow 的参数（成为 WorkflowContext.origin_payload）
+
+        返回:
+            Workflow handler 的返回值
+        """
+        wf = self._workflows_by_name.get(name)
+        if not wf:
+            raise WorkflowNotFoundError(
+                f"workflow {name!r} not found; registered: {sorted(self._workflows_by_name)}"
+            )
+        if not wf.handler:
+            raise RuntimeError(f"workflow {name!r} has no handler")
+        return await self._dispatch_workflow(wf, "__manual__", params)
+
+    async def _dispatch_workflow(
+        self, wf: Workflow, topic: str, payload: Any
+    ) -> Any:
+        """执行一个 workflow 的 handler。
+
+        创建 WorkflowContext，调用 handler，处理超时和异常。
+        """
+        if not wf.handler:
+            logger.warning("workflow %s: no handler, skip", wf.name)
+            return None
+
+        ctx = WorkflowContext(
+            workflow_name=wf.name,
+            trace_id=uuid.uuid4().hex,
+            origin_topic=topic,
+            origin_payload=payload,
+            _hub=self,
+        )
+        try:
+            result = await asyncio.wait_for(wf.handler(ctx), timeout=wf.timeout)
+            logger.debug("[%s] workflow %s completed", ctx.trace_id, wf.name)
+            return result
+        except TimeoutError:
+            logger.error(
+                "[%s] workflow %s timed out after %.1fs",
+                ctx.trace_id,
+                wf.name,
+                wf.timeout,
+            )
+            raise
+        except asyncio.CancelledError:
+            logger.debug("[%s] workflow %s cancelled", ctx.trace_id, wf.name)
+            raise
+        except Exception:
+            logger.exception("[%s] workflow %s failed", ctx.trace_id, wf.name)
+            raise
 
     # ---- 内部 -----------------------------------------------------------
 

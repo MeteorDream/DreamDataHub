@@ -9,8 +9,6 @@ import httpx
 from croniter import croniter
 
 from hub import Context, Module
-from hub.topics import TELEGRAM_REPLY
-from message.bot import BotEvent
 
 mod = Module("weather")
 
@@ -175,7 +173,7 @@ class Weather:
         # response reference:  {"addressComponent": {"city": "深圳市", "province": "广东省", "adcode": "440305", "district": "南山区", "towncode": "440305001000", "streetNumber": {"number": "164号", "location": "113.927994,22.528178", "direction": "西北", "distance": "46.1741", "street": "南光路"}, "country": "中国", "township": "南头街道", "businessAreas": [{"location": "113.922350,22.523562", "name": "桂庙路口", "id": "440305"}, {"location": "113.920308,22.532088", "name": "桃园", "id": "440305"}, {"location": "113.948639,22.545900", "name": "科技园", "id": "440305"}], "building": {"name": "荟芳园", "type": "商务住宅;住宅区;住宅小区"}, "neighborhood": {"name": "荟芳园", "type": "商务住宅;住宅区;住宅小区"}, "citycode": "0755"}, "formatted_address": "广东省深圳市南山区南头街道荟芳园"}
 
     @staticmethod
-    async def amap_weather(city: str) -> tuple[str, list]:
+    async def amap_weather(city: str) -> tuple[str, dict]:
         """天气查询, 根据 city 返回天气信息, api 文档: https://lbs.amap.com/api/webservice/guide/api-advanced/weatherinfo
 
         Args:
@@ -320,3 +318,42 @@ class Weather:
                     msg += f"• {c_date} ({c_week}): {c_weat} | {cast.get('nighttemp')}~{cast.get('daytemp')}℃\n"
 
         return msg
+
+
+@mod.provides("weather.location")
+async def location_capability(ctx: Context, params: dict) -> dict:
+    """提供逆地理编码能力（workflow 可调用）。
+
+    params:
+        longitude: float
+        latitude: float
+
+    returns:
+        regeocode dict（包含 formatted_address, addressComponent 等字段）
+    """
+    longitude = params.get("longitude", 0.0)
+    latitude = params.get("latitude", 0.0)
+    msg, data = await Weather.amap_location(longitude, latitude)
+    if msg:
+        raise RuntimeError(f"weather.location failed: {msg}")
+    return data
+
+
+@mod.provides("weather.forecast")
+async def forecast_capability(ctx: Context, params: dict) -> dict:
+    """提供天气预报能力（workflow 可调用）。
+
+    params:
+        adcode: str — 城市编码
+        city: str | None — 城市名（可选，仅用于返回中携带）
+
+    returns:
+        {"forecasts": list, "city": str | None}
+    """
+    adcode = params.get("adcode", "")
+    if not adcode:
+        raise ValueError("weather.forecast: adcode is required")
+    msg, forecasts = await Weather.amap_weather(adcode)
+    if msg:
+        raise RuntimeError(f"weather.forecast failed: {msg}")
+    return {"forecasts": forecasts, "city": params.get("city")}

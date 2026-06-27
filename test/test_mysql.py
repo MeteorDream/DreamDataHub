@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from message.bot import AtSegment, BotEvent, PlainSegment
+from message.bot import AtSegment, BotEvent, TextSegment
 from message.db import (
     BotMessageRecord,
     DBRecord,
@@ -181,7 +181,7 @@ def test_bot_message_from_event_round_trip() -> None:
         detail_type="group",
         sub_type="mentioned",
         message_id="12345",
-        message=[PlainSegment(text="hello"), AtSegment(user_id="999")],
+        message=[TextSegment(text="hello"), AtSegment(user_id="999")],
         bot_id="1228531751",
         user_id="2423428733",
         user_name="梦蝶",
@@ -203,7 +203,7 @@ def test_bot_message_from_event_round_trip() -> None:
     # message 列被序列化成 JSON 字符串
     message_param = params[7]  # message 在第 8 个位置（按声明顺序）
     assert isinstance(message_param, str)
-    assert '"Plain"' in message_param
+    assert '"Text"' in message_param
     assert '"hello"' in message_param
     assert '"At"' in message_param
 
@@ -218,7 +218,7 @@ def test_bot_message_json_serialization_handles_strenum() -> None:
         detail_type="private",
         sub_type="",
         message_id="x",
-        message=[PlainSegment(text="hi")],
+        message=[TextSegment(text="hi")],
         bot_id="0",
         user_id="0",
         user_name="",
@@ -227,8 +227,8 @@ def test_bot_message_json_serialization_handles_strenum() -> None:
     )
     sql, params = build_insert(BotMessageRecord, BotMessageRecord.from_event(evt).model_dump())
     msg_json = params[7]
-    # JSON 里 type 应该是字符串 "Plain"，不是 StrEnum repr
-    assert '"type": "Plain"' in msg_json or '"type":"Plain"' in msg_json
+    # JSON 里 type 应该是字符串 "Text"，不是 StrEnum repr
+    assert '"type": "Text"' in msg_json or '"type":"Text"' in msg_json
 
 
 # ---------------------------------------------------------------------------

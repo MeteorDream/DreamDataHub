@@ -40,6 +40,18 @@ class Context:
         """投递一条事件到总线。立即返回（fire-and-forget）。"""
         await self._hub.publish(topic, payload)
 
+    async def start_workflow(self, name: str, params: Any = None) -> Any:
+        """主动触发一个 workflow 并等待执行结果。
+
+        参数:
+            name: Workflow 名称
+            params: 传给 workflow handler 的参数（成为 WorkflowContext.origin_payload）
+
+        返回:
+            Workflow handler 的返回值
+        """
+        return await self._hub.start_workflow(name, params)
+
     def spawn(
         self, coro: Coroutine[Any, Any, Any], *, name: str | None = None
     ) -> asyncio.Task[Any]:

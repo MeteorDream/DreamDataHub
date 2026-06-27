@@ -42,7 +42,7 @@ from message.bot import (
     JsonSegment,
     LocationSegment,
     MusicSegment,
-    PlainSegment,
+    TextSegment,
     PokeSegment,
     ReplySegment,
     ShareSegment,
@@ -357,7 +357,7 @@ async def _one_segment(seg: dict, ctx: Context, message_id: str) -> BotSegment |
     try:
         if t == "text":
             text = str(data.get("text", ""))
-            return PlainSegment(text=text) if text else None
+            return TextSegment(text=text) if text else None
 
         if t == "image":
             return await _build_image_segment(data, ctx, message_id)
@@ -617,7 +617,7 @@ def _build_send_msg_params(event: BotEvent) -> dict:
 
 def _bot_segment_to_onebot(seg: BotSegment) -> dict | None:
     t = seg.type
-    if t == "Plain":
+    if t == "Text":
         return {"type": "text", "data": {"text": seg.text}}  # type: ignore[union-attr]
     if t == "Image":
         # 已经是 data: URI 或 http url 都直接传给 OneBot

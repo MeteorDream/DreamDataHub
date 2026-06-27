@@ -13,7 +13,7 @@ import asyncio
 
 from hub import Context, Module
 from hub.topics import IM_MESSAGE, IM_REPLY, SYSTEM_READY
-from message.bot import BotEvent, PlainSegment
+from message.bot import BotEvent, TextSegment
 
 mod = Module("echo")
 
@@ -61,7 +61,7 @@ async def _ticker(ctx: Context) -> None:
                 detail_type="private",
                 sub_type="",
                 message_id=tick_id,
-                message=[PlainSegment(text=f"tick #{ctx.state.tick}")],
+                message=[TextSegment(text=f"tick #{ctx.state.tick}")],
                 bot_id="echo-bot",
                 user_id="0",
                 user_name="echo",

@@ -3,7 +3,7 @@
 ``python main.py`` 会：
 1. 读取 ``config.toml``（可用 ``DATAHUB_CONFIG`` 环境变量覆盖路径）
 2. 初始化日志
-3. 按 config 加载启用的模块
+3. 按 config 加载启用的模块和 workflow
 4. 启动 Hub 主循环；Ctrl+C 时优雅关停
 """
 
@@ -16,7 +16,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from hub import Hub, load_modules
+from hub import Hub, load_modules, load_workflows
 from utils.logger import init_logging
 
 logger = logging.getLogger("main")
@@ -46,6 +46,8 @@ async def amain() -> None:
     hub = Hub()
     for module in load_modules(config):
         hub.register(module)
+    # 加载 workflow（需要 hub 已初始化能力注册表）
+    load_workflows(config, hub)
 
     await hub.run()
     logger.info("DataHub stopped cleanly")

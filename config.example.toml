@@ -65,3 +65,10 @@ message_type = [""]
 # 第三方获取 weather 的平台配置
 # 高德
 amap_key = "amap_key"
+
+# --- WorkFlow: Weather Assistant (An workflow example) -----------------------
+[workflow.weather_assistant]
+enable = true
+description = "天气助手, 无实际意义，作为 workflow 的例子"
+subscribe = []
+timeout = 0.
