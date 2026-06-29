@@ -94,9 +94,6 @@ class BaseTelegramHandle:
             session_name=update.effective_chat.title if update.effective_chat else "",
         )
         await self.ctx.publish(TELEGRAM_MESSAGE, event)
-        self.ctx.logger.info(
-            "[Telegram] User: %s chat: %s Text message: %s", user.username, chat_id, msg.text
-        )
 
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Log the error and send a telegram message to notify the developer."""

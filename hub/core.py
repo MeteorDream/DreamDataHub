@@ -316,7 +316,11 @@ class Hub:
             _hub=self,
         )
         try:
-            result = await asyncio.wait_for(wf.handler(ctx), timeout=wf.timeout)
+            if wf.timeout > 0:
+                result = await asyncio.wait_for(wf.handler(ctx), timeout=wf.timeout)
+            else:
+                # timeout <= 0 表示不设超时
+                result = await wf.handler(ctx)
             logger.debug("[%s] workflow %s completed", ctx.trace_id, wf.name)
             return result
         except TimeoutError:

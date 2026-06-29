@@ -154,7 +154,7 @@ class DreamBotHandle(BaseTelegramHandle):
         await self.ctx.publish(TELEGRAM_MESSAGE, event)
         self.ctx.logger.info(
             "[Telegram] User: %s chat: %s(%s) Text message: %s",
-            user.full_name,
+            user.full_name if user else "",
             chat_id,
             thread_id,
             msg.text,

@@ -55,8 +55,8 @@ max_context_tokens = 64000
 # weather 工具类, 必须启用才能支持天气推送功能
 [module.weather]
 enabled = true
-## scheduler 控制是否启用周期推送功能
-scheduler = false
+## schedule 控制是否启用周期推送功能
+schedule = false
 # 支持往多个 im 通道发送
 platform = ["telegram"]
 chat_id = [""]
@@ -66,9 +66,15 @@ message_type = [""]
 # 高德
 amap_key = "amap_key"
 
-# --- WorkFlow: Weather Assistant (An workflow example) -----------------------
+# --- WorkFlow ----------------------------------------------------------------
+# Workflow 是编排型模块，通过 WorkflowContext.invoke() 调用其他模块的 provides 能力
+# 两种触发方式：1) 订阅 topic（subscribe）；2) 模块中通过 ctx.start_workflow() 主动触发
+#
+# 新增 workflow：在 workflow/<name>.py 中定义 Workflow 实例，并在此添加配置段
+
 [workflow.weather_assistant]
-enable = true
-description = "天气助手, 无实际意义，作为 workflow 的例子"
-subscribe = []
-timeout = 0.
+enabled = true
+description = "天气助理 — LLM 判断意图 → 查天气 → LLM 生成回复 → 发布到 im.reply"
+subscribe = "im.message"
+# timeout 为 0 表示不设超时限制；大于 0 为超时秒数
+timeout = 0
