@@ -1,7 +1,7 @@
 """Context — 每个模块在运行期看到的 facade。
 
-模块作者通过 ``ctx`` 与 Hub 交互：发布事件、起后台任务、读自己的配置、写
-自己的状态。Context 是一个**轻量门面**，不持有业务数据；模块状态请放
+模块作者通过 ``ctx`` 与 Hub 交互：发布事件、调其他模块能力、起后台任务、读自己
+的配置、写自己的状态。Context 是一个**轻量门面**，不持有业务数据；模块状态请放
 ``ctx.state``（``SimpleNamespace``）。
 """
 
@@ -13,7 +13,10 @@ from collections.abc import Coroutine
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel
+
 if TYPE_CHECKING:
+    from hub.capabilities import Capability
     from hub.core import Hub
 
 
@@ -40,17 +43,24 @@ class Context:
         """投递一条事件到总线。立即返回（fire-and-forget）。"""
         await self._hub.publish(topic, payload)
 
-    async def start_workflow(self, name: str, params: Any = None) -> Any:
-        """主动触发一个 workflow 并等待执行结果。
+    async def invoke(
+        self, cap: type[Capability], params: BaseModel | dict[str, Any]
+    ) -> BaseModel:
+        """调用另一个模块提供的能力。
 
         参数:
-            name: Workflow 名称
-            params: 传给 workflow handler 的参数（成为 WorkflowContext.origin_payload）
+            cap: Capability marker 类（例如 ``LLMChatService``）
+            params: 该 marker 的 ``Params`` 实例，或任何能被 ``Params.model_validate``
+                    接受的数据（例如 dict）。Hub 会做一次归一化。
 
         返回:
-            Workflow handler 的返回值
+            该 marker 的 ``Result`` 类型实例（由 Hub 校验后再返回）
+
+        异常:
+            CapabilityNotFoundError: 能力未被任何已启用模块 provides
+            ValidationError: 入参或返回值不匹配 marker 声明的 schema
         """
-        return await self._hub.start_workflow(name, params)
+        return await self._hub.invoke_capability(cap, params)
 
     def spawn(
         self, coro: Coroutine[Any, Any, Any], *, name: str | None = None

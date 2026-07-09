@@ -1,5 +1,174 @@
 # DreamDataHub
-Dream's Personal Data Hub
+
+Dream's Personal Data Hub — 一个基于 asyncio 的**微内核事件总线**，把 IM 网关（QQ / Telegram）、LLM、数据库、天气等能力当作可插拔"模块"接入同一个 Hub，通过 topic 广播 + Capability RPC 组合成完整业务链。
+
+```
+┌───────────┐  im.message   ┌─────────────────┐  invoke     ┌──────────────┐
+│  im_qq    │──────────────▶│ weather_assistant│───────────▶│  llm_openai  │
+│ telegram  │               │  (编排 module)   │            │  (LLMChat)   │
+└───────────┘◀─── im.reply ─┴─────────────────┴──── invoke ─┴──────────────┘
+                                                              weather
+```
+
+## Hub 抽象层
+
+Hub 只有三个原语：
+
+- **Module** — 插件单元，每个 `module/<name>.py` 顶层声明**唯一一个** `Module` 实例
+- **Topic** — 字符串通道（`hub/topics.py` 集中定义），`publish` 广播、多订阅者并发处理
+- **Capability** — 类型化的点对点 RPC 契约（marker class + Pydantic `Params` / `Result`）
+
+三者语义严格分开：
+- Topic 是**广播**（无返回值，多订阅者），适合"A 发生了 X，任何关心的都可以响应"
+- Capability 是 **RPC**（有返回值，唯一实现），适合"A 需要 B 给个结果才能继续"
+- Module 内可同时订阅 topic + 提供 capability + 依赖别的 capability
+
+### 声明一个 Module
+
+```python
+# module/my_module.py
+from hub import Context, Module
+from hub.topics import IM_MESSAGE, IM_REPLY
+
+mod = Module("my_module")
+
+@mod.on_startup
+async def setup(ctx: Context) -> None:
+    ctx.state.counter = 0            # 模块状态挂在 ctx.state (SimpleNamespace)
+
+@mod.on(IM_MESSAGE)                  # 订阅 topic
+async def handle(ctx: Context, event) -> None:
+    ctx.state.counter += 1
+    await ctx.publish(IM_REPLY, ...)  # 发另一个 topic
+
+@mod.on_shutdown
+async def teardown(ctx: Context) -> None:
+    ctx.logger.info("bye, saw %d msgs", ctx.state.counter)
+```
+
+启用模块只要在 `config.toml` 里加一段：
+
+```toml
+[module.my_module]
+enabled = true
+# ... 模块自定义字段
+```
+
+### 声明与实现一个 Capability
+
+Capability 用 marker class 承载 `name` / `Params` / `Result` 三元组，marker class 本身作为注册键，同时是 IDE 类型锚点。
+
+```python
+# module/llm_openai.py（节选）
+from typing import ClassVar
+from pydantic import BaseModel
+from hub import Capability, Context, Module
+
+class LLMChatParams(BaseModel):
+    messages: list[dict[str, str]]
+    model: str | None = None
+
+class LLMChatResult(BaseModel):
+    reply: str
+    model: str
+
+class LLMChatService(Capability):
+    name: ClassVar[str] = "llm.chat"
+    Params: ClassVar[type[BaseModel]] = LLMChatParams
+    Result: ClassVar[type[BaseModel]] = LLMChatResult
+
+mod = Module("llm_openai")
+
+@mod.provides(LLMChatService)
+async def chat(ctx: Context, params: LLMChatParams) -> LLMChatResult:
+    resp = await ctx.state.client.chat.completions.create(
+        model=params.model or ctx.state.model,
+        messages=params.messages,
+    )
+    return LLMChatResult(reply=resp.choices[0].message.content or "", model=params.model or ctx.state.model)
+```
+
+Hub 在注册时会检查 marker class 全局唯一；在调用时会对 `Params` / `Result` 双向做 `model_validate`，契约违反立即报错。
+
+### 调用别的 Capability + 声明依赖
+
+模块通过 `ctx.invoke(MarkerClass, ParamsInstance)` 调用其他模块的能力。**必须**通过构造参数 `requires=[...]` 显式声明，loader 会做严格校验。
+
+```python
+# module/weather_assistant.py（节选）
+from hub import Context, Module
+from hub.topics import IM_MESSAGE, IM_REPLY
+from module.llm_openai import LLMChatService, LLMChatParams
+from module.weather import WeatherForecastService, WeatherForecastParams
+
+mod = Module(
+    "weather_assistant",
+    requires=[LLMChatService, WeatherForecastService],   # 显式声明
+)
+
+@mod.on(IM_MESSAGE)
+async def entry(ctx: Context, event) -> None:
+    intent = await ctx.invoke(
+        LLMChatService,
+        LLMChatParams(messages=[...]),
+    )
+    # intent 是 LLMChatResult 实例，IDE 能补全 .reply
+    if not is_weather_query(intent.reply):
+        return
+    forecast = await ctx.invoke(
+        WeatherForecastService,
+        WeatherForecastParams(adcode="440305"),
+    )
+    reply = await ctx.invoke(LLMChatService, LLMChatParams(messages=[...]))
+    await ctx.publish(IM_REPLY, build_reply_event(reply.reply))
+```
+
+### 依赖校验与拓扑排序（严格模式）
+
+Loader 加载模块清单时会：
+
+1. **收集所有 provides**：`provider: Capability → Module` 反向索引
+2. **严格依赖校验**：任一模块的 `requires` 未被覆盖 → `RuntimeError` 拒绝启动
+3. **Kahn 拓扑排序**：`provider → requirer` 有向图，保证提供者先于依赖者启动
+4. **循环依赖检测**：图有环 → `RuntimeError`
+
+配置里模块顺序可以任意，启动序由拓扑决定。示例日志：
+
+```
+[INFO] load order (topological): heartbeat -> llm_openai -> weather -> weather_assistant
+```
+
+### 错误处理约定
+
+- **Topic handler 抛异常**：Hub 捕获 + 记 log + 转发一条 `system.error` 事件，**不影响其他订阅者**
+- **Capability invoke 抛异常**：直接冒泡到调用方，调用方自己决定重试 / 降级
+- **Pydantic 校验失败**：`ctx.invoke` 会抛 `pydantic.ValidationError`
+- **未注册能力**：`ctx.invoke` 抛 `CapabilityNotFoundError`
+
+### Context API 速查
+
+| 方法 | 语义 |
+|---|---|
+| `await ctx.publish(topic, payload)` | 广播事件，立即返回 |
+| `await ctx.invoke(cap, params)` | RPC 调其他模块能力，返回 `cap.Result` 实例 |
+| `ctx.spawn(coro, name=...)` | 注册后台长任务，shutdown 时统一取消 |
+| `ctx.state` | 模块私有状态（`SimpleNamespace`） |
+| `ctx.config` | 该模块的 config 字典（来自 `[module.<name>]`） |
+| `ctx.logger` | 命名为 `module.<name>` 的 logger |
+| `ctx.hub_event` | shutdown 信号的 `asyncio.Event`，长任务循环里用来退出 |
+
+### 现有内置模块
+
+| 模块 | 订阅 topic | 提供 capability | 说明 |
+|---|---|---|---|
+| `heartbeat` | `system.*` | — | 系统心跳，定时发 `system.heartbeat` |
+| `im_qq` | `im.reply` / `qq.reply` | — | OneBot v11/napcat WebSocket，跨平台 `im.message` 双发 |
+| `telegram_bot` | `telegram.reply` | — | python-telegram-bot 22.x |
+| `llm_openai` | `im.message` | `LLMChatService` | OpenAI 兼容接口 |
+| `weather` | — | `WeatherForecastService` / `WeatherLocationService` | 高德天气 API |
+| `mysql` | `database.write` | — | aiomysql 池，按 Pydantic model 自动 DDL |
+| `weather_assistant` | `im.message` | — | 编排：意图判断 → 查天气 → 生成回复 |
+| `echo` | `system.ready` / `im.*` | — | 冒烟模块 |
 
 ## Bot 消息通信协议
 

@@ -16,7 +16,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from hub import Hub, load_modules, load_workflows
+from hub import Hub, load_modules
 from utils.logger import init_logging
 
 logger = logging.getLogger("main")
@@ -46,8 +46,6 @@ async def amain() -> None:
     hub = Hub()
     for module in load_modules(config):
         hub.register(module)
-    # 加载 workflow（需要 hub 已初始化能力注册表）
-    load_workflows(config, hub)
 
     await hub.run()
     logger.info("DataHub stopped cleanly")

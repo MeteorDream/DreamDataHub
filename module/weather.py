@@ -7,8 +7,56 @@ from typing import Any, ClassVar
 
 import httpx
 from croniter import croniter
+from pydantic import BaseModel, Field
 
-from hub import Context, Module
+from hub import Capability, Context, Module
+
+
+class WeatherLocationParams(BaseModel):
+    """``WeatherLocationService`` 入参 —— 高德逆地理编码。"""
+
+    longitude: float
+    latitude: float
+
+
+class WeatherLocationResult(BaseModel):
+    """``WeatherLocationService`` 返回值 —— 高德 regeocode 原样字段。"""
+
+    model_config = {"extra": "allow"}
+
+    formatted_address: str = ""
+    addressComponent: dict[str, Any] = Field(default_factory=dict)
+
+
+class WeatherLocationService(Capability):
+    """逆地理编码能力契约。"""
+
+    name: ClassVar[str] = "weather.location"
+    Params: ClassVar[type[BaseModel]] = WeatherLocationParams
+    Result: ClassVar[type[BaseModel]] = WeatherLocationResult
+
+
+class WeatherForecastParams(BaseModel):
+    """``WeatherForecastService`` 入参。"""
+
+    adcode: str = Field(min_length=1, description="城市/地区编码，如 '440305'")
+    city: str | None = Field(default=None, description="展示用城市名（可选，原样透传返回）")
+
+
+class WeatherForecastResult(BaseModel):
+    """``WeatherForecastService`` 返回值。"""
+
+    forecasts: list[dict[str, Any]] = Field(default_factory=list)
+    city: str | None = None
+
+
+class WeatherForecastService(Capability):
+    """天气预报能力契约。"""
+
+    name: ClassVar[str] = "weather.forecast"
+    Params: ClassVar[type[BaseModel]] = WeatherForecastParams
+    Result: ClassVar[type[BaseModel]] = WeatherForecastResult
+
 
 mod = Module("weather")
 
@@ -320,40 +368,23 @@ class Weather:
         return msg
 
 
-@mod.provides("weather.location")
-async def location_capability(ctx: Context, params: dict) -> dict:
-    """提供逆地理编码能力（workflow 可调用）。
-
-    params:
-        longitude: float
-        latitude: float
-
-    returns:
-        regeocode dict（包含 formatted_address, addressComponent 等字段）
-    """
-    longitude = params.get("longitude", 0.0)
-    latitude = params.get("latitude", 0.0)
-    msg, data = await Weather.amap_location(longitude, latitude)
+@mod.provides(WeatherLocationService)
+async def location_capability(
+    ctx: Context, params: WeatherLocationParams
+) -> WeatherLocationResult:
+    """逆地理编码能力实现。参数与返回值遵循 :class:`WeatherLocationService` 契约。"""
+    msg, data = await Weather.amap_location(params.longitude, params.latitude)
     if msg:
         raise RuntimeError(f"weather.location failed: {msg}")
-    return data
+    return WeatherLocationResult.model_validate(data or {})
 
 
-@mod.provides("weather.forecast")
-async def forecast_capability(ctx: Context, params: dict) -> dict:
-    """提供天气预报能力（workflow 可调用）。
-
-    params:
-        adcode: str — 城市编码
-        city: str | None — 城市名（可选，仅用于返回中携带）
-
-    returns:
-        {"forecasts": list, "city": str | None}
-    """
-    adcode = params.get("adcode", "")
-    if not adcode:
-        raise ValueError("weather.forecast: adcode is required")
-    msg, forecasts = await Weather.amap_weather(adcode)
+@mod.provides(WeatherForecastService)
+async def forecast_capability(
+    ctx: Context, params: WeatherForecastParams
+) -> WeatherForecastResult:
+    """天气预报能力实现。参数与返回值遵循 :class:`WeatherForecastService` 契约。"""
+    msg, forecasts = await Weather.amap_weather(params.adcode)
     if msg:
         raise RuntimeError(f"weather.forecast failed: {msg}")
-    return {"forecasts": forecasts, "city": params.get("city")}
+    return WeatherForecastResult(forecasts=forecasts or [], city=params.city)

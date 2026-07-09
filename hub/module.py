@@ -1,4 +1,4 @@
-"""Module — 装饰器工厂，模块作者用它声明订阅与生命周期钩子。
+"""Module — 装饰器工厂，模块作者用它声明订阅、能力和生命周期钩子。
 
 每个 ``module/<name>.py`` 顶层创建**唯一一个** ``Module(name)`` 实例，
 loader 会扫描该 .py 的 globals 找到它。
@@ -6,8 +6,18 @@ loader 会扫描该 .py 的 globals 找到它。
 用法::
 
     from hub import Module, Context
+    from pydantic import BaseModel
 
-    mod = Module("llm_openai")
+    # 声明能力契约
+    class MyParams(BaseModel): ...
+    class MyResult(BaseModel): ...
+    class MyService(Capability):
+        name = "my.service"
+        Params = MyParams
+        Result = MyResult
+
+    # 声明模块（如果依赖别的能力，用 requires 显式声明）
+    mod = Module("my_module", requires=[SomeOtherService])
 
 
     @mod.on_startup
@@ -15,7 +25,11 @@ loader 会扫描该 .py 的 globals 找到它。
 
 
     @mod.on("im.message")
-    async def reply(event, ctx: Context): ...
+    async def reply(ctx: Context, event): ...
+
+
+    @mod.provides(MyService)
+    async def do(ctx: Context, params: MyParams) -> MyResult: ...
 
 
     @mod.on_shutdown
@@ -27,26 +41,39 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from hub.capabilities import Capability
+
 if TYPE_CHECKING:
     from hub.context import Context
 
-# 用户写的 handler 签名：async (ctx, payload) -> None
+# 普通订阅 handler 签名：async (ctx, payload) -> None
 Handler = Callable[["Context", Any], Awaitable[None]]
+# Capability handler 签名：async (ctx, params: Params) -> Result
+# 具体的 Params/Result 类型由 Capability 子类声明；这里只做宽松的顶层类型。
+CapabilityHandler = Callable[["Context", Any], Awaitable[Any]]
 # 生命周期钩子签名：async (ctx) -> None
 Lifecycle = Callable[["Context"], Awaitable[None]]
 
 
 class Module:
-    """模块声明对象 — 收集 handler、钩子、能力声明。"""
+    """模块声明对象 — 收集 handler、钩子、能力声明、依赖声明。"""
 
-    def __init__(self, name: str) -> None:
+    def __init__(
+        self,
+        name: str,
+        *,
+        requires: list[type[Capability]] | None = None,
+    ) -> None:
         if not name or not name.replace("_", "").isalnum():
             raise ValueError(f"Module name must be alnum/underscore: {name!r}")
         self.name = name
+        # 显式依赖：本模块启动前必须有别的（已启用）模块 provides 这些能力
+        self.requires: list[type[Capability]] = list(requires or [])
         self._handlers: dict[str, list[Handler]] = {}
         self._startup: list[Lifecycle] = []
         self._shutdown: list[Lifecycle] = []
-        self._provides: dict[str, Handler] = {}
+        # capability marker class → handler fn
+        self._provides: dict[type[Capability], CapabilityHandler] = {}
         # 由 loader 注入；运行时由 Hub 读取
         self._config: dict[str, Any] = {}
 
@@ -61,21 +88,35 @@ class Module:
 
         return decorator
 
-    def provides(self, capability: str) -> Callable[[Handler], Handler]:
-        """声明模块提供的能力，可被 workflow 或其他模块通过 ``invoke`` 调用。
+    def provides(
+        self, cap: type[Capability]
+    ) -> Callable[[CapabilityHandler], CapabilityHandler]:
+        """声明模块提供的能力（marker class），可被其他模块通过 ``ctx.invoke`` 调用。
 
-        能力名使用点分命名，例如 ``weather.forecast``、``llm.chat``。
-        同一能力名只能被一个模块声明（全局唯一）。
+        marker class 必须已定义 ``name`` / ``Params`` / ``Result`` 三个 ClassVar。
+        同一 marker class 全局只能被一个模块 provides。
 
         用法::
 
-            @mod.provides("weather.forecast")
-            async def my_forecast(ctx: Context, params: dict) -> dict:
+            @mod.provides(WeatherForecastService)
+            async def my_forecast(ctx: Context, params: WeatherForecastParams) -> WeatherForecastResult:
                 ...
         """
+        if not (isinstance(cap, type) and issubclass(cap, Capability)):
+            raise TypeError(f"provides() requires a Capability subclass, got {cap!r}")
+        # 校验 marker class 必需的三个字段都齐备
+        for attr in ("name", "Params", "Result"):
+            if not hasattr(cap, attr):
+                raise TypeError(
+                    f"Capability {cap.__name__} missing required class var {attr!r}"
+                )
+        if cap in self._provides:
+            raise ValueError(
+                f"Module {self.name!r} already provides capability {cap.__name__}"
+            )
 
-        def decorator(fn: Handler) -> Handler:
-            self._provides[capability] = fn
+        def decorator(fn: CapabilityHandler) -> CapabilityHandler:
+            self._provides[cap] = fn
             return fn
 
         return decorator
@@ -96,7 +137,7 @@ class Module:
         self._config = dict(config)
 
     @property
-    def capabilities(self) -> dict[str, Handler]:
+    def capabilities(self) -> dict[type[Capability], CapabilityHandler]:
         return dict(self._provides)
 
     @property
@@ -117,4 +158,9 @@ class Module:
 
     def __repr__(self) -> str:
         topics = ", ".join(self._handlers) or "-"
-        return f"Module({self.name!r}, topics=[{topics}])"
+        provides = ", ".join(cap.__name__ for cap in self._provides) or "-"
+        requires = ", ".join(cap.__name__ for cap in self.requires) or "-"
+        return (
+            f"Module({self.name!r}, topics=[{topics}], "
+            f"provides=[{provides}], requires=[{requires}])"
+        )

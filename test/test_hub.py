@@ -7,11 +7,14 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
+from pydantic import BaseModel, ValidationError
 
-from hub import Context, Hub, Module
+from hub import Capability, Context, Hub, Module
+from hub.core import CapabilityNotFoundError
+from hub.loader import _resolve_dependencies
 from hub.topics import SYSTEM_ERROR, SYSTEM_READY
 
 
@@ -163,3 +166,174 @@ def test_duplicate_module_registration_rejected() -> None:
     hub.register(Module("dup"))
     with pytest.raises(ValueError, match="duplicate"):
         hub.register(Module("dup"))
+
+
+# ---------------------------------------------------------------------------
+# Capability / invoke / requires / topological sort
+# ---------------------------------------------------------------------------
+
+
+class _EchoParams(BaseModel):
+    text: str
+
+
+class _EchoResult(BaseModel):
+    echoed: str
+
+
+class _EchoService(Capability):
+    name: ClassVar[str] = "test.echo"
+    Params: ClassVar[type[BaseModel]] = _EchoParams
+    Result: ClassVar[type[BaseModel]] = _EchoResult
+
+
+def test_ctx_invoke_calls_capability() -> None:
+    """provider 模块 @provides，consumer 模块通过 ctx.invoke 调用。"""
+    result_holder: list[_EchoResult] = []
+
+    provider = Module("provider")
+    consumer = Module("consumer", requires=[_EchoService])
+
+    @provider.provides(_EchoService)
+    async def echo(_ctx: Context, params: _EchoParams) -> _EchoResult:
+        return _EchoResult(echoed=params.text.upper())
+
+    @consumer.on_startup
+    async def kick(ctx: Context) -> None:
+        r = await ctx.invoke(_EchoService, _EchoParams(text="hi"))
+        assert isinstance(r, _EchoResult)
+        result_holder.append(r)
+
+    async def go() -> None:
+        hub = Hub()
+        hub.register(provider)
+        hub.register(consumer)
+        await _run_until(hub, lambda: bool(result_holder))
+
+    asyncio.run(go())
+    assert result_holder[0].echoed == "HI"
+
+
+def test_invoke_missing_capability_raises() -> None:
+    """未注册的 capability 抛 CapabilityNotFoundError。"""
+    m = Module("solo")
+
+    @m.on_startup
+    async def kick(ctx: Context) -> None:
+        # invoke 里能力未注册 → 应抛 CapabilityNotFoundError
+        try:
+            await ctx.invoke(_EchoService, _EchoParams(text="x"))
+        except CapabilityNotFoundError:
+            pass
+        else:
+            raise AssertionError("expected CapabilityNotFoundError")
+
+    async def go() -> None:
+        hub = Hub()
+        hub.register(m)
+        await _run_until(hub, lambda: True)
+
+    asyncio.run(go())
+
+
+def test_invoke_validates_params() -> None:
+    """入参不符合 schema 抛 ValidationError。"""
+    provider = Module("prov")
+    checker = Module("checker", requires=[_EchoService])
+    raised: list[bool] = []
+
+    @provider.provides(_EchoService)
+    async def echo(_ctx: Context, params: _EchoParams) -> _EchoResult:
+        return _EchoResult(echoed=params.text)
+
+    @checker.on_startup
+    async def kick(ctx: Context) -> None:
+        # 传 dict 里缺 text 字段 → Pydantic 校验失败
+        try:
+            await ctx.invoke(_EchoService, {"wrong_key": 1})
+        except ValidationError:
+            raised.append(True)
+
+    async def go() -> None:
+        hub = Hub()
+        hub.register(provider)
+        hub.register(checker)
+        await _run_until(hub, lambda: raised == [True])
+
+    asyncio.run(go())
+    assert raised == [True]
+
+
+def test_duplicate_provides_rejected() -> None:
+    """两个模块都 provides 同一 Capability → loader 拒绝。"""
+    m1 = Module("m1")
+    m2 = Module("m2")
+
+    @m1.provides(_EchoService)
+    async def _a(_ctx: Context, _p: _EchoParams) -> _EchoResult:
+        return _EchoResult(echoed="")
+
+    @m2.provides(_EchoService)
+    async def _b(_ctx: Context, _p: _EchoParams) -> _EchoResult:
+        return _EchoResult(echoed="")
+
+    with pytest.raises(RuntimeError, match="provided by both"):
+        _resolve_dependencies([m1, m2])
+
+
+def test_missing_requires_rejected() -> None:
+    """模块 requires 一个能力但没模块 provides → loader 拒绝。"""
+    m = Module("hungry", requires=[_EchoService])
+
+    with pytest.raises(RuntimeError, match="requires capability"):
+        _resolve_dependencies([m])
+
+
+def test_topological_sort_orders_provider_first() -> None:
+    """provider 模块被拓扑排序到 requirer 之前。"""
+    consumer = Module("consumer", requires=[_EchoService])
+    provider = Module("provider")
+
+    @provider.provides(_EchoService)
+    async def _echo(_ctx: Context, _p: _EchoParams) -> _EchoResult:
+        return _EchoResult(echoed="")
+
+    # 故意把 consumer 放前面，测试排序会颠倒它们
+    ordered = _resolve_dependencies([consumer, provider])
+    names = [m.name for m in ordered]
+    assert names == ["provider", "consumer"]
+
+
+def test_cyclic_dependency_detected() -> None:
+    """A -> B -> A 循环依赖 → loader 拒绝。"""
+
+    class _AParams(BaseModel):
+        pass
+
+    class _AResult(BaseModel):
+        pass
+
+    class _CapA(Capability):
+        name: ClassVar[str] = "test.a"
+        Params: ClassVar[type[BaseModel]] = _AParams
+        Result: ClassVar[type[BaseModel]] = _AResult
+
+    class _CapB(Capability):
+        name: ClassVar[str] = "test.b"
+        Params: ClassVar[type[BaseModel]] = _AParams
+        Result: ClassVar[type[BaseModel]] = _AResult
+
+    ma = Module("ma", requires=[_CapB])
+    mb = Module("mb", requires=[_CapA])
+
+    @ma.provides(_CapA)
+    async def _a(_ctx: Context, _p: _AParams) -> _AResult:
+        return _AResult()
+
+    @mb.provides(_CapB)
+    async def _b(_ctx: Context, _p: _AParams) -> _AResult:
+        return _AResult()
+
+    with pytest.raises(RuntimeError, match="cyclic"):
+        _resolve_dependencies([ma, mb])
+

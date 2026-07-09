@@ -4,6 +4,8 @@
 作为回复发到 ``im.reply``；顺手把这次问答发到 ``llm.exchange``，由 store 类模块
 负责持久化。
 
+对外提供 ``LLMChatService`` 能力供其他模块通过 ``ctx.invoke`` 调用。
+
 不感知 IM 协议的存在：所有平台细节都封在 IM 模块里。
 
 依赖：``openai`` SDK；目前 pyproject 未声明，按需 ``uv add openai``。
@@ -11,9 +13,38 @@
 
 from __future__ import annotations
 
-from hub import Context, Module
+from typing import ClassVar
+
+from pydantic import BaseModel, Field
+
+from hub import Capability, Context, Module
 from hub.topics import IM_MESSAGE, IM_REPLY, LLM_EXCHANGE
 from message.bot import BotEvent, TextSegment
+
+
+class LLMChatParams(BaseModel):
+    """``LLMChatService`` 入参。"""
+
+    messages: list[dict[str, str]] = Field(
+        default_factory=list, description="OpenAI 格式的消息列表 [{role, content}, ...]"
+    )
+    model: str | None = Field(default=None, description="可覆盖默认模型；留空使用模块默认")
+
+
+class LLMChatResult(BaseModel):
+    """``LLMChatService`` 返回值。"""
+
+    reply: str
+    model: str
+
+
+class LLMChatService(Capability):
+    """LLM 对话能力契约。"""
+
+    name: ClassVar[str] = "llm.chat"
+    Params: ClassVar[type[BaseModel]] = LLMChatParams
+    Result: ClassVar[type[BaseModel]] = LLMChatResult
+
 
 mod = Module("llm_openai")
 
@@ -111,33 +142,25 @@ async def reply(ctx: Context, event: BotEvent) -> None:
     )
 
 
-@mod.provides("llm.chat")
-async def chat_capability(ctx: Context, params: dict) -> dict:
-    """提供 LLM 对话能力（workflow 可调用）。
-
-    params:
-        messages: list[dict] — OpenAI 格式的消息列表
-        model: str | None — 可覆盖默认模型
-
-    returns:
-        {"reply": str, "model": str}
-    """
+@mod.provides(LLMChatService)
+async def chat_capability(ctx: Context, params: LLMChatParams) -> LLMChatResult:
+    """LLM 对话能力实现。参数与返回值遵循 :class:`LLMChatService` 契约。"""
     if ctx.state.client is None:
         raise RuntimeError("llm_openai: client not initialized")
-    messages = params.get("messages", [])
-    model = params.get("model", ctx.state.model)
+    model = params.model or ctx.state.model
     try:
         resp = await ctx.state.client.chat.completions.create(
             model=model,
-            messages=messages,
+            messages=params.messages,
         )
     except Exception:
         ctx.logger.exception("llm_openai: chat capability failed")
         raise
     text = resp.choices[0].message.content or ""
-    return {"reply": text, "model": model}
+    return LLMChatResult(reply=text, model=model)
 
 
 def _extract_text(event: BotEvent) -> str:
     parts = [seg.text for seg in event.message if seg.type == "Text"]
     return "".join(parts).strip()
+
