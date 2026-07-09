@@ -127,7 +127,7 @@ class BaseTelegramHandle:
         if not event.session_id.startswith("tg:"):
             return
         chat_id = int(event.session_id.removeprefix("tg:"))
-        text = "".join(seg.text for seg in event.message if seg.type == "Plain")  # type: ignore[attr-defined]
+        text = "".join(seg.text for seg in event.message if seg.type == "Text")  # type: ignore[attr-defined]
         if not text:
             return
         try:

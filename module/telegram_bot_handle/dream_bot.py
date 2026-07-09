@@ -29,8 +29,9 @@ from telegram.ext import (
 )
 
 from hub import Context
-from hub.topics import TELEGRAM_MESSAGE
+from hub.topics import DATABASE_WRITE, TELEGRAM_MESSAGE
 from message.bot import BotEvent, TextSegment
+from message.db import BotMessageRecord
 from module.weather import Weather
 
 from .base_bot import BaseTelegramHandle
@@ -152,6 +153,13 @@ class DreamBotHandle(BaseTelegramHandle):
             session_name=str(update.effective_chat.title) if update.effective_chat else "",
         )
         await self.ctx.publish(TELEGRAM_MESSAGE, event)
+        await self.ctx.publish(
+            DATABASE_WRITE,
+            {
+                "table": BotMessageRecord.__table__,
+                "row": BotMessageRecord.from_event(event).model_dump(),
+            },
+        )
         self.ctx.logger.info(
             "[Telegram] User: %s chat: %s(%s) Text message: %s",
             user.full_name if user else "",
@@ -200,7 +208,7 @@ class DreamBotHandle(BaseTelegramHandle):
             return
         chat_id = int(event.session_id.removeprefix("tg:"))
         message_thread_id = int(event.sub_type) if event.sub_type else None
-        text = "".join(seg.text for seg in event.message if seg.type == "Plain")  # type: ignore[attr-defined]
+        text = "".join(seg.text for seg in event.message if seg.type == "Text")  # type: ignore[attr-defined]
         if not text:
             return
         try:

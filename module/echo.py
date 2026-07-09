@@ -81,7 +81,7 @@ async def _ticker(ctx: Context) -> None:
 def _summarize(event: BotEvent) -> str:
     parts = []
     for seg in event.message:
-        if getattr(seg, "type", None) == "Plain":
+        if getattr(seg, "type", None) == "Text":
             parts.append(getattr(seg, "text", ""))
         else:
             parts.append(f"[{seg.type}]")

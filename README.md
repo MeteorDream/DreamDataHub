@@ -23,7 +23,7 @@ BotEvent
 
 ```python
 BotSegment = Annotated[
-    PlainSegment | ImageSegment | AudioSegment | VideoSegment | FileSegment
+    TextSegment | ImageSegment | AudioSegment | VideoSegment | FileSegment
     | FaceSegment | AtSegment | NodeSegment | NodesSegment | PokeSegment
     | ReplySegment | ForwardSegment | ShareSegment | ContactSegment
     | LocationSegment | MusicSegment | JsonSegment | UnknownSegment,
@@ -59,7 +59,7 @@ BotSegment = Annotated[
 
 | 段类型 | `type` 值 | 主要字段 |
 |---|---|---|
-| `PlainSegment` | `Plain` | `text` |
+| `TextSegment` | `Text` | `text` |
 | `ImageSegment` | `Image` | `url` / `name` / `size` / `mime` / `width` / `height` |
 | `AudioSegment` | `Audio` | `url` / `name` / `size` / `mime` / `duration` |
 | `VideoSegment` | `Video` | `url` / `name` / `size` / `mime` / `width` / `height` / `duration` |
@@ -111,7 +111,7 @@ BotSegment = Annotated[
   "message": [
     { "type": "Reply",  "message_id": "191486284" },
     { "type": "At",     "user_id": "12312432", "display_name": "bot" },
-    { "type": "Plain",  "text": " 你好,帮我看看这张图" },
+    { "type": "Text",  "text": " 你好,帮我看看这张图" },
     {
       "type": "Image",
       "url": "https://example.com/img.png",
@@ -140,7 +140,7 @@ from message.bot import BotEvent
 event = BotEvent.model_validate(payload)         # payload: dict（来自 webhook）
 for seg in event.message:
     match seg.type:
-        case "Plain":
+        case "Text":
             print(seg.text)
         case "At":
             print("at user:", seg.user_id, "all=", seg.at_all)
@@ -156,8 +156,8 @@ for seg in event.message:
 ```python
 from message.bot import SegmentAdapter
 
-seg = SegmentAdapter.validate_python({"type": "Plain", "text": "hi"})
-# seg: PlainSegment
+seg = SegmentAdapter.validate_python({"type": "Text", "text": "hi"})
+# seg: TextSegment
 ```
 
 `BotSegment` 本身只是类型构造，不能直接当 Pydantic 模型调用；用 `SegmentAdapter`（`TypeAdapter(BotSegment)`）来对单个段做反序列化 / `dump_python` / `dump_json`。
@@ -165,7 +165,7 @@ seg = SegmentAdapter.validate_python({"type": "Plain", "text": "hi"})
 #### 构造事件
 
 ```python
-from message.bot import BotEvent, PlainSegment, AtSegment, ReplySegment
+from message.bot import BotEvent, TextSegment, AtSegment, ReplySegment
 
 event = BotEvent(
     id="...", platform="napcat", time=..., type="message",
@@ -173,7 +173,7 @@ event = BotEvent(
     message=[
         ReplySegment(message_id="..."),
         AtSegment(user_id="12345"),
-        PlainSegment(text="你好"),
+        TextSegment(text="你好"),
     ],
     bot_id="...", user_id="...", user_name="...",
     session_id="...", session_name="...",

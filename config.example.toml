@@ -55,8 +55,8 @@ max_context_tokens = 64000
 # weather 工具类, 必须启用才能支持天气推送功能
 [module.weather]
 enabled = true
-## schedule 控制是否启用周期推送功能
-schedule = false
+## scheduler 控制周期推送功能调度, 需要传递 cron 字符串(例如每天推送: 0 8 * * *), 留空表示不进行周期推送
+schedule = ""
 # 支持往多个 im 通道发送
 platform = ["telegram"]
 chat_id = [""]
