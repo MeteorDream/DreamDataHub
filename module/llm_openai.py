@@ -1,8 +1,8 @@
 """llm_openai — 调用 OpenAI 兼容服务的 LLM 模块。
 
-订阅 ``im.message``：抽取文本 → 调 chat.completions → 构造一条新的 ``BotEvent``
-作为回复发到 ``im.reply``；顺手把这次问答发到 ``llm.exchange``，由 store 类模块
-负责持久化。
+订阅 :class:`IMMessage`：抽取文本 → 调 chat.completions → 构造 ``BotEvent``
+作为回复发到 :class:`IMReply`；顺手把这次问答发到 :class:`LLMExchange`，由
+store 类模块负责持久化。
 
 对外提供 ``LLMChatService`` 能力供其他模块通过 ``ctx.invoke`` 调用。
 
@@ -18,8 +18,14 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from hub import Capability, Context, Module
-from hub.topics import IM_MESSAGE, IM_REPLY, LLM_EXCHANGE
 from message.bot import BotEvent, TextSegment
+from topics.im import IMMessage, IMReply
+from topics.llm import LLMExchange, LLMExchangePayload
+
+
+# ---------------------------------------------------------------------------
+# Capability：LLMChatService
+# ---------------------------------------------------------------------------
 
 
 class LLMChatParams(BaseModel):
@@ -78,7 +84,7 @@ async def teardown(ctx: Context) -> None:
             pass
 
 
-@mod.on(IM_MESSAGE)
+@mod.on(IMMessage)
 async def reply(ctx: Context, event: BotEvent) -> None:
     if ctx.state.client is None:
         return
@@ -130,15 +136,15 @@ async def reply(ctx: Context, event: BotEvent) -> None:
         session_id=event.session_id,
         session_name=event.session_name,
     )
-    await ctx.publish(IM_REPLY, reply_event)
+    await ctx.publish(IMReply, reply_event)
     await ctx.publish(
-        LLM_EXCHANGE,
-        {
-            "session_id": event.session_id,
-            "prompt": user_text,
-            "response": answer,
-            "meta": {"model": ctx.state.model, "platform": event.platform},
-        },
+        LLMExchange,
+        LLMExchangePayload(
+            session_id=event.session_id,
+            prompt=user_text,
+            response=answer,
+            meta={"model": ctx.state.model, "platform": event.platform},
+        ),
     )
 
 

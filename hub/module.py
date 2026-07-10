@@ -5,8 +5,7 @@ loader 会扫描该 .py 的 globals 找到它。
 
 用法::
 
-    from hub import Module, Context
-    from pydantic import BaseModel
+    from hub import Capability, Module, Topic
 
     # 声明能力契约
     class MyParams(BaseModel): ...
@@ -16,24 +15,29 @@ loader 会扫描该 .py 的 globals 找到它。
         Params = MyParams
         Result = MyResult
 
+    # 声明 topic
+    class MyEvent(Topic):
+        name = "my.event"
+        Payload = MyPayload
+
     # 声明模块（如果依赖别的能力，用 requires 显式声明）
     mod = Module("my_module", requires=[SomeOtherService])
 
 
     @mod.on_startup
-    async def setup(ctx: Context): ...
+    async def setup(ctx): ...
 
 
-    @mod.on("im.message")
-    async def reply(ctx: Context, event): ...
+    @mod.on(MyEvent)                       # ← 订阅 topic 用 Topic 类
+    async def handle(ctx, payload): ...
 
 
     @mod.provides(MyService)
-    async def do(ctx: Context, params: MyParams) -> MyResult: ...
+    async def do(ctx, params): ...
 
 
     @mod.on_shutdown
-    async def teardown(ctx: Context): ...
+    async def teardown(ctx): ...
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from hub.capabilities import Capability
+from hub.topic import Topic
 
 if TYPE_CHECKING:
     from hub.context import Context
@@ -69,7 +74,8 @@ class Module:
         self.name = name
         # 显式依赖：本模块启动前必须有别的（已启用）模块 provides 这些能力
         self.requires: list[type[Capability]] = list(requires or [])
-        self._handlers: dict[str, list[Handler]] = {}
+        # topic marker class → 该 topic 下的 handler 列表
+        self._handlers: dict[type[Topic], list[Handler]] = {}
         self._startup: list[Lifecycle] = []
         self._shutdown: list[Lifecycle] = []
         # capability marker class → handler fn
@@ -79,8 +85,21 @@ class Module:
 
     # ---- 装饰器 ---------------------------------------------------------
 
-    def on(self, topic: str) -> Callable[[Handler], Handler]:
-        """订阅一个 topic。同一模块可对同一 topic 注册多个 handler。"""
+    def on(self, topic: type[Topic]) -> Callable[[Handler], Handler]:
+        """订阅一个 Topic。同一模块可对同一 Topic 注册多个 handler。
+
+        用法::
+
+            @mod.on(IMMessage)
+            async def handle(ctx: Context, event: BotEvent) -> None: ...
+        """
+        if not (isinstance(topic, type) and issubclass(topic, Topic)):
+            raise TypeError(f"on() requires a Topic subclass, got {topic!r}")
+        for attr in ("name", "Payload"):
+            if not hasattr(topic, attr):
+                raise TypeError(
+                    f"Topic {topic.__name__} missing required class var {attr!r}"
+                )
 
         def decorator(fn: Handler) -> Handler:
             self._handlers.setdefault(topic, []).append(fn)
@@ -141,7 +160,7 @@ class Module:
         return dict(self._provides)
 
     @property
-    def handlers(self) -> dict[str, list[Handler]]:
+    def handlers(self) -> dict[type[Topic], list[Handler]]:
         return self._handlers
 
     @property
@@ -157,7 +176,7 @@ class Module:
         return self._config
 
     def __repr__(self) -> str:
-        topics = ", ".join(self._handlers) or "-"
+        topics = ", ".join(t.__name__ for t in self._handlers) or "-"
         provides = ", ".join(cap.__name__ for cap in self._provides) or "-"
         requires = ", ".join(cap.__name__ for cap in self.requires) or "-"
         return (

@@ -1,7 +1,7 @@
 """heartbeat — 内置心跳模块。
 
-启动后起一个后台任务，每 N 秒发一条系统 heartbeat 消息
-同时订阅 ``system.ready`` `system.heartbeat` `system.error` 输出到日志。
+启动后起一个后台任务，每 N 秒发一条 ``SystemHeartbeat`` 消息；
+同时订阅 ``SystemReady`` / ``SystemHeartbeat`` / ``SystemError`` 输出到日志。
 """
 
 from __future__ import annotations
@@ -10,7 +10,14 @@ import asyncio
 import time
 
 from hub import Context, Module
-from hub.topics import SYSTEM_ERROR, SYSTEM_HEARTBEAT, SYSTEM_READY
+from topics.system import (
+    SystemError,
+    SystemErrorPayload,
+    SystemHeartbeat,
+    SystemHeartbeatPayload,
+    SystemReady,
+    SystemReadyPayload,
+)
 
 mod = Module("heartbeat")
 
@@ -29,34 +36,44 @@ async def teardown(ctx: Context) -> None:
     ctx.logger.info("Heartbeat module teardown (system sent %d heartbeat)", ctx.state.counter)
 
 
-@mod.on(SYSTEM_READY)
-async def on_ready(ctx: Context, _payload) -> None:
-    ctx.logger.info("system.ready received")
+@mod.on(SystemReady)
+async def on_ready(ctx: Context, _payload: SystemReadyPayload) -> None:
+    ctx.logger.info("SystemReady received")
 
 
-@mod.on(SYSTEM_HEARTBEAT)
-async def on_heartbeat(ctx: Context, _payload) -> None:
-    ctx.logger.info("system.heartbeat received: %s", _payload)
+@mod.on(SystemHeartbeat)
+async def on_heartbeat(ctx: Context, payload: SystemHeartbeatPayload) -> None:
+    ctx.logger.info(
+        "SystemHeartbeat received: count=%d state=%s msg=%s",
+        payload.count,
+        payload.state,
+        payload.message,
+    )
 
 
-@mod.on(SYSTEM_ERROR)
-async def on_error(ctx: Context, _payload) -> None:
-    ctx.logger.error("system.error receive: %s", _payload)
+@mod.on(SystemError)
+async def on_error(ctx: Context, payload: SystemErrorPayload) -> None:
+    ctx.logger.error(
+        "SystemError received: module=%s topic=%s exc=%s",
+        payload.module,
+        payload.topic,
+        payload.exc,
+    )
 
 
 async def _heartbeat(ctx: Context) -> None:
-    """周期性发一条心跳消息到 system.heartbeat"""
+    """周期性发一条心跳消息到 SystemHeartbeat"""
     try:
         while not ctx.hub_event.is_set():
             ctx.state.counter += 1
             await ctx.publish(
-                SYSTEM_HEARTBEAT,
-                {
-                    "count": ctx.state.counter,
-                    "state": "running",
-                    "message": "heartbeat running...",
-                    "timestamp": time.time(),
-                },
+                SystemHeartbeat,
+                SystemHeartbeatPayload(
+                    count=ctx.state.counter,
+                    state="running",
+                    message="heartbeat running...",
+                    timestamp=time.time(),
+                ),
             )
             try:
                 await asyncio.wait_for(ctx.hub_event.wait(), timeout=ctx.state.interval)
@@ -65,3 +82,4 @@ async def _heartbeat(ctx: Context) -> None:
     except asyncio.CancelledError:
         ctx.logger.debug("heartbeat cancelled")
         raise
+

@@ -7,8 +7,8 @@ from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from hub import Context
-from hub.topics import TELEGRAM_MESSAGE
 from message.bot import BotEvent, TextSegment
+from topics.telegram import TelegramMessage
 
 
 class BaseTelegramHandle:
@@ -72,7 +72,7 @@ class BaseTelegramHandle:
         )
 
     async def text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """消息投递到 TELEGRAM_MESSAGE"""
+        """消息投递到 TelegramMessage"""
         msg = update.effective_message
         if msg is None or msg.text is None:
             return
@@ -93,7 +93,7 @@ class BaseTelegramHandle:
             session_id=f"tg:{chat_id}",
             session_name=update.effective_chat.title if update.effective_chat else "",
         )
-        await self.ctx.publish(TELEGRAM_MESSAGE, event)
+        await self.ctx.publish(TelegramMessage, event)
 
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Log the error and send a telegram message to notify the developer."""

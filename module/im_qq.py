@@ -28,7 +28,6 @@ import uuid
 from typing import Any
 
 from hub import Context, Module
-from hub.topics import IM_MESSAGE, IM_REPLY, QQ_MESSAGE, QQ_REPLY
 from message.bot import (
     AtSegment,
     AudioSegment,
@@ -49,6 +48,8 @@ from message.bot import (
     UnknownSegment,
     VideoSegment,
 )
+from topics.im import IMMessage, IMReply
+from topics.qq import QQMessage, QQReply
 
 mod = Module("im_qq")
 
@@ -113,7 +114,7 @@ async def teardown(ctx: Context) -> None:
 # ---------------------------------------------------------------------------
 
 
-@mod.on(IM_REPLY)
+@mod.on(IMReply)
 async def on_reply_broadcast(ctx: Context, event: BotEvent) -> None:
     """跨平台广播 reply：仅承接 session_id 是 group:/private: 的事件。"""
     if not event.session_id.startswith(("group:", "private:")):
@@ -121,7 +122,7 @@ async def on_reply_broadcast(ctx: Context, event: BotEvent) -> None:
     await _send_reply(event, ctx)
 
 
-@mod.on(QQ_REPLY)
+@mod.on(QQReply)
 async def on_reply_direct(ctx: Context, event: BotEvent) -> None:
     """业务方显式定向到 QQ 时使用。"""
     await _send_reply(event, ctx)
@@ -316,8 +317,8 @@ async def _on_message_event(ev: dict, ctx: Context) -> None:
         nickname,
     )
 
-    await ctx.publish(IM_MESSAGE, event)
-    await ctx.publish(QQ_MESSAGE, event)
+    await ctx.publish(IMMessage, event)
+    await ctx.publish(QQMessage, event)
 
 
 def _resolve_self_user_id(ev: dict, ctx: Context) -> str:

@@ -15,7 +15,7 @@ Dream's Personal Data Hub — 一个基于 asyncio 的**微内核事件总线**�
 Hub 只有三个原语：
 
 - **Module** — 插件单元，每个 `module/<name>.py` 顶层声明**唯一一个** `Module` 实例
-- **Topic** — 字符串通道（`hub/topics.py` 集中定义），`publish` 广播、多订阅者并发处理
+- **Topic** — 事件通道 marker class，集中定义在 `topics/` 目录（一个领域一个文件）；`publish` 广播、多订阅者并发处理，Payload 走 Pydantic 契约校验
 - **Capability** — 类型化的点对点 RPC 契约（marker class + Pydantic `Params` / `Result`）
 
 三者语义严格分开：
@@ -23,12 +23,46 @@ Hub 只有三个原语：
 - Capability 是 **RPC**（有返回值，唯一实现），适合"A 需要 B 给个结果才能继续"
 - Module 内可同时订阅 topic + 提供 capability + 依赖别的 capability
 
+**Topic vs Capability 的归属对称**：Capability 由声明方 = 唯一实现方持有，marker class 就近声明在实现模块里；Topic 是任何模块都可以发 / 收的中立通道，marker class 集中在 `topics/` 目录，不属于任何单个模块。
+
+### 目录结构
+
+```
+hub/                    # 微内核：Hub / Module / Context / Topic / Capability 基类
+├── topic.py            #   Topic 基类
+├── capabilities.py     #   Capability 基类
+├── core.py             #   Hub 主对象
+├── module.py           #   Module 装饰器工厂
+├── context.py          #   模块运行时门面
+└── loader.py           #   模块加载 + 依赖拓扑排序
+
+topics/                 # 所有 Topic 契约（跨模块通道，一个领域一个文件）
+├── system.py           #   SystemReady / SystemHeartbeat / SystemError
+├── im.py               #   IMMessage / IMReply / PLATFORM_TOPICS
+├── qq.py               #   QQMessage / QQReply
+├── telegram.py         #   TelegramMessage / TelegramReply
+├── database.py         #   DatabaseWrite
+└── llm.py              #   LLMExchange
+
+message/                # 消息协议模型（Pydantic BotEvent + DB 表 schema）
+├── bot.py
+└── db.py
+
+module/                 # 具体业务模块（一个 Module 实例一个文件）
+├── heartbeat.py / echo.py
+├── im_qq.py / telegram_bot.py
+├── llm_openai.py       #   Capability: LLMChatService
+├── weather.py          #   Capability: WeatherForecast / WeatherLocation
+├── weather_assistant.py#   编排：subscribe IMMessage, invoke LLM + weather
+└── mysql.py
+```
+
 ### 声明一个 Module
 
 ```python
 # module/my_module.py
 from hub import Context, Module
-from hub.topics import IM_MESSAGE, IM_REPLY
+from topics.im import IMMessage, IMReply
 
 mod = Module("my_module")
 
@@ -36,10 +70,10 @@ mod = Module("my_module")
 async def setup(ctx: Context) -> None:
     ctx.state.counter = 0            # 模块状态挂在 ctx.state (SimpleNamespace)
 
-@mod.on(IM_MESSAGE)                  # 订阅 topic
+@mod.on(IMMessage)                   # 订阅 topic（传 Topic 类）
 async def handle(ctx: Context, event) -> None:
     ctx.state.counter += 1
-    await ctx.publish(IM_REPLY, ...)  # 发另一个 topic
+    await ctx.publish(IMReply, ...)  # 发另一个 topic
 
 @mod.on_shutdown
 async def teardown(ctx: Context) -> None:
@@ -54,9 +88,31 @@ enabled = true
 # ... 模块自定义字段
 ```
 
+### 声明一个 Topic
+
+Topic 用 marker class 承载 `name` / `Payload` / `description` 三元组，marker class 本身作为注册键，同时是 IDE 类型锚点。**所有 Topic 都放在 `topics/` 目录**——因为按定义 Topic 就是跨模块通道，没有"单模块 own"这种东西。
+
+```python
+# topics/my_domain.py
+from typing import ClassVar
+from pydantic import BaseModel
+from hub import Topic
+
+class MyEventPayload(BaseModel):
+    session_id: str
+    text: str
+
+class MyEvent(Topic):
+    name: ClassVar[str] = "my.event"
+    description: ClassVar[str] = "示例事件"
+    Payload: ClassVar[type[BaseModel]] = MyEventPayload
+```
+
+Hub 在 `publish` 时会对 payload 做 `Payload.model_validate` 校验，契约违反立即抛 `pydantic.ValidationError`——订阅方拿到的 payload 一定是 `Payload` 实例。
+
 ### 声明与实现一个 Capability
 
-Capability 用 marker class 承载 `name` / `Params` / `Result` 三元组，marker class 本身作为注册键，同时是 IDE 类型锚点。
+Capability 用 marker class 承载 `name` / `Params` / `Result` 三元组，**就近声明在实现模块里**（声明方 = 唯一实现方，天然绑定）。
 
 ```python
 # module/llm_openai.py（节选）
@@ -97,7 +153,7 @@ Hub 在注册时会检查 marker class 全局唯一；在调用时会对 `Params
 ```python
 # module/weather_assistant.py（节选）
 from hub import Context, Module
-from hub.topics import IM_MESSAGE, IM_REPLY
+from topics.im import IMMessage, IMReply
 from module.llm_openai import LLMChatService, LLMChatParams
 from module.weather import WeatherForecastService, WeatherForecastParams
 
@@ -106,7 +162,7 @@ mod = Module(
     requires=[LLMChatService, WeatherForecastService],   # 显式声明
 )
 
-@mod.on(IM_MESSAGE)
+@mod.on(IMMessage)
 async def entry(ctx: Context, event) -> None:
     intent = await ctx.invoke(
         LLMChatService,
@@ -120,7 +176,7 @@ async def entry(ctx: Context, event) -> None:
         WeatherForecastParams(adcode="440305"),
     )
     reply = await ctx.invoke(LLMChatService, LLMChatParams(messages=[...]))
-    await ctx.publish(IM_REPLY, build_reply_event(reply.reply))
+    await ctx.publish(IMReply, build_reply_event(reply.reply))
 ```
 
 ### 依赖校验与拓扑排序（严格模式）
@@ -136,21 +192,28 @@ Loader 加载模块清单时会：
 
 ```
 [INFO] load order (topological): heartbeat -> llm_openai -> weather -> weather_assistant
+[INFO] hub: topic subscriptions (5 topics):
+[INFO]   im.message        (IMMessage      )  [3 subs]  <- [echo, llm_openai, weather_assistant]
+[INFO]   im.reply          (IMReply        )  [1 sub]   <- [echo]
+[INFO]   system.error      (SystemError    )  [1 sub]   <- [heartbeat]
+[INFO]   system.heartbeat  (SystemHeartbeat)  [1 sub]   <- [heartbeat]
+[INFO]   system.ready      (SystemReady    )  [2 subs]  <- [echo, heartbeat]
 ```
 
 ### 错误处理约定
 
-- **Topic handler 抛异常**：Hub 捕获 + 记 log + 转发一条 `system.error` 事件，**不影响其他订阅者**
+- **Topic handler 抛异常**：Hub 捕获 + 记 log + 转发一条 `SystemError` 事件，**不影响其他订阅者**
+- **Publish payload 契约违反**：`ctx.publish` 抛 `pydantic.ValidationError`，不会静默广播错数据
 - **Capability invoke 抛异常**：直接冒泡到调用方，调用方自己决定重试 / 降级
-- **Pydantic 校验失败**：`ctx.invoke` 会抛 `pydantic.ValidationError`
+- **Capability params/result 契约违反**：`ctx.invoke` 抛 `pydantic.ValidationError`
 - **未注册能力**：`ctx.invoke` 抛 `CapabilityNotFoundError`
 
 ### Context API 速查
 
 | 方法 | 语义 |
 |---|---|
-| `await ctx.publish(topic, payload)` | 广播事件，立即返回 |
-| `await ctx.invoke(cap, params)` | RPC 调其他模块能力，返回 `cap.Result` 实例 |
+| `await ctx.publish(Topic, payload)` | 广播事件（payload 类型校验后立即返回） |
+| `await ctx.invoke(Cap, params)` | RPC 调其他模块能力，返回 `Cap.Result` 实例 |
 | `ctx.spawn(coro, name=...)` | 注册后台长任务，shutdown 时统一取消 |
 | `ctx.state` | 模块私有状态（`SimpleNamespace`） |
 | `ctx.config` | 该模块的 config 字典（来自 `[module.<name>]`） |
@@ -161,14 +224,14 @@ Loader 加载模块清单时会：
 
 | 模块 | 订阅 topic | 提供 capability | 说明 |
 |---|---|---|---|
-| `heartbeat` | `system.*` | — | 系统心跳，定时发 `system.heartbeat` |
-| `im_qq` | `im.reply` / `qq.reply` | — | OneBot v11/napcat WebSocket，跨平台 `im.message` 双发 |
-| `telegram_bot` | `telegram.reply` | — | python-telegram-bot 22.x |
-| `llm_openai` | `im.message` | `LLMChatService` | OpenAI 兼容接口 |
+| `heartbeat` | `SystemReady` / `SystemHeartbeat` / `SystemError` | — | 系统心跳，定时发 `SystemHeartbeat` |
+| `im_qq` | `IMReply` / `QQReply` | — | OneBot v11/napcat WebSocket，跨平台 `IMMessage` 双发 |
+| `telegram_bot` | `TelegramReply` | — | python-telegram-bot 22.x |
+| `llm_openai` | `IMMessage` | `LLMChatService` | OpenAI 兼容接口；顺带发布 `LLMExchange` |
 | `weather` | — | `WeatherForecastService` / `WeatherLocationService` | 高德天气 API |
-| `mysql` | `database.write` | — | aiomysql 池，按 Pydantic model 自动 DDL |
-| `weather_assistant` | `im.message` | — | 编排：意图判断 → 查天气 → 生成回复 |
-| `echo` | `system.ready` / `im.*` | — | 冒烟模块 |
+| `mysql` | `DatabaseWrite` | — | aiomysql 池，按 Pydantic model 自动 DDL |
+| `weather_assistant` | `IMMessage` | — | 编排：意图判断 → 查天气 → 生成回复 |
+| `echo` | `SystemReady` / `IMMessage` / `IMReply` | — | 冒烟模块 |
 
 ## Bot 消息通信协议
 

@@ -1,6 +1,6 @@
 """mysql — 通用数据库写入模块。
 
-订阅 ``database.write``：``payload = {"table": str, "row": dict}``。
+订阅 :class:`DatabaseWrite`（payload: ``DatabaseWritePayload{table, row}``）。
 按 ``message/db.py:TABLES`` 里注册的 Pydantic 模型校验 row、生成参数化 INSERT。
 
 启动时按 ``enabled_tables`` 自动 ``CREATE TABLE IF NOT EXISTS``——schema 改字段
@@ -11,14 +11,12 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import aiomysql
 from pydantic import ValidationError
 
 from hub import Context, Module
-from hub.topics import DATABASE_WRITE
 from message.db import TABLES, DBRecord, build_create_ddl, build_insert
+from topics.database import DatabaseWrite, DatabaseWritePayload
 
 mod = Module("mysql")
 
@@ -94,19 +92,10 @@ async def teardown(ctx: Context) -> None:
     ctx.logger.info("mysql: closed")
 
 
-@mod.on(DATABASE_WRITE)
-async def on_write(ctx: Context, payload: Any) -> None:
-    if not isinstance(payload, dict):
-        ctx.logger.warning("mysql: bad payload type=%r", type(payload).__name__)
-        return
-    table = payload.get("table") or ""
-    row = payload.get("row") or {}
-    if not isinstance(table, str) or not table:
-        ctx.logger.warning("mysql: bad payload (missing/non-str table)")
-        return
-    if not isinstance(row, dict):
-        ctx.logger.warning("mysql: bad payload (row must be dict, got %s)", type(row).__name__)
-        return
+@mod.on(DatabaseWrite)
+async def on_write(ctx: Context, payload: DatabaseWritePayload) -> None:
+    table = payload.table
+    row = payload.row
 
     model = ctx.state.tables.get(table)
     if model is None:

@@ -1,7 +1,7 @@
 """echo — 内置自检 / 示例模块。
 
-启动后起一个后台任务，每 N 秒发一条假的 ``im.message``；
-同时订阅 ``im.message``、``im.reply``、``system.ready`` 打日志。
+启动后起一个后台任务，每 N 秒发一条假的 ``IMMessage``；
+同时订阅 ``IMMessage``、``IMReply``、``SystemReady`` 打日志。
 
 把它当作 hub 框架的「Hello, World」：单独启用它就能看到 publish / subscribe /
 spawn / startup / shutdown 全链路日志。
@@ -12,8 +12,9 @@ from __future__ import annotations
 import asyncio
 
 from hub import Context, Module
-from hub.topics import IM_MESSAGE, IM_REPLY, SYSTEM_READY
 from message.bot import BotEvent, TextSegment
+from topics.im import IMMessage, IMReply
+from topics.system import SystemReady, SystemReadyPayload
 
 mod = Module("echo")
 
@@ -32,23 +33,23 @@ async def teardown(ctx: Context) -> None:
     ctx.logger.info("echo module down (sent %d ticks)", ctx.state.tick)
 
 
-@mod.on(SYSTEM_READY)
-async def on_ready(ctx: Context, _payload) -> None:
-    ctx.logger.info("system.ready received")
+@mod.on(SystemReady)
+async def on_ready(ctx: Context, _payload: SystemReadyPayload) -> None:
+    ctx.logger.info("SystemReady received")
 
 
-@mod.on(IM_MESSAGE)
+@mod.on(IMMessage)
 async def on_message(ctx: Context, event: BotEvent) -> None:
-    ctx.logger.info("got im.message: %s", _summarize(event))
+    ctx.logger.info("got IMMessage: %s", _summarize(event))
 
 
-@mod.on(IM_REPLY)
+@mod.on(IMReply)
 async def on_reply(ctx: Context, event: BotEvent) -> None:
-    ctx.logger.info("got im.reply:   %s", _summarize(event))
+    ctx.logger.info("got IMReply:   %s", _summarize(event))
 
 
 async def _ticker(ctx: Context) -> None:
-    """周期性发一条假消息到 im.message，验证总线在跑。"""
+    """周期性发一条假消息到 IMMessage，验证总线在跑。"""
     try:
         while not ctx.hub_event.is_set():
             ctx.state.tick += 1
@@ -68,7 +69,7 @@ async def _ticker(ctx: Context) -> None:
                 session_id="echo:self",
                 session_name="echo",
             )
-            await ctx.publish(IM_MESSAGE, event)
+            await ctx.publish(IMMessage, event)
             try:
                 await asyncio.wait_for(ctx.hub_event.wait(), timeout=ctx.state.interval)
             except TimeoutError:
@@ -86,3 +87,4 @@ def _summarize(event: BotEvent) -> str:
         else:
             parts.append(f"[{seg.type}]")
     return f"{event.platform}/{event.session_id}: " + " ".join(parts)
+

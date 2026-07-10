@@ -1,11 +1,11 @@
 """Hub — 总线、生命周期、能力注册。
 
 职责：
-- 维护 ``topic → [Subscriber]`` 路由表
+- 维护 ``Topic → [Subscriber]`` 路由表
 - ``publish``：把投递转换成独立 task，慢/崩 handler 不影响其他订阅者
 - 启停顺序：startup 顺序、shutdown LIFO
 - SIGINT/SIGTERM：取消所有后台任务，运行 shutdown 钩子，干净退出
-- 异常隔离：handler 异常**不**冒泡，转为 ``system.error`` 事件 + 日志
+- 异常隔离：handler 异常**不**冒泡，转为 ``SystemError`` 事件 + 日志
 - 能力注册与调用：模块通过 ``@mod.provides(Cap)`` 声明能力，其他模块通过
   ``ctx.invoke(Cap, params)`` 调用
 
@@ -30,7 +30,8 @@ from pydantic import BaseModel, ValidationError
 from hub.capabilities import Capability
 from hub.context import Context
 from hub.module import CapabilityHandler, Handler, Module
-from hub.topics import SYSTEM_ERROR, SYSTEM_READY
+from hub.topic import Topic
+from topics.system import SystemError, SystemErrorPayload, SystemReady, SystemReadyPayload
 
 logger = logging.getLogger("hub")
 
@@ -44,27 +45,33 @@ class _Subscriber:
     """运行期订阅者条目 — 把 handler 与它所属模块的 Context 绑在一起。"""
 
     module_name: str
-    topic: str
+    topic: type[Topic]
     fn: Handler
     ctx: Context
 
     async def invoke(self, payload: Any, hub: Hub) -> None:
-        """安全调用 handler — 异常被捕获、上报 system.error，绝不外泄。"""
+        """安全调用 handler — 异常被捕获、上报 SystemError，绝不外泄。"""
         try:
             await self.fn(self.ctx, payload)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self.ctx.logger.exception("handler %r on %r failed", self.fn.__name__, self.topic)
-            # 二次发布 system.error 时再失败就不要无限套娃了
-            if self.topic != SYSTEM_ERROR:
+            self.ctx.logger.exception(
+                "handler %r on %s failed", self.fn.__name__, self.topic.__name__
+            )
+            # 二次发布 SystemError 时再失败就不要无限套娃了
+            if self.topic is not SystemError:
                 try:
                     await hub.publish(
-                        SYSTEM_ERROR,
-                        {"module": self.module_name, "topic": self.topic, "exc": repr(exc)},
+                        SystemError,
+                        SystemErrorPayload(
+                            module=self.module_name,
+                            topic=self.topic.name,
+                            exc=repr(exc),
+                        ),
                     )
                 except Exception:
-                    logger.exception("failed to publish system.error")
+                    logger.exception("failed to publish SystemError")
 
 
 @dataclass
@@ -81,7 +88,8 @@ class Hub:
     """数据交换中心主对象。"""
 
     def __init__(self) -> None:
-        self._subs: dict[str, list[_Subscriber]] = {}
+        # topic marker class → 该 topic 的订阅者列表
+        self._subs: dict[type[Topic], list[_Subscriber]] = {}
         self._bound: list[_BoundModule] = []  # 按加载顺序绑定模块
         self._tasks: set[asyncio.Task[Any]] = set()
         self._running = False
@@ -95,25 +103,41 @@ class Hub:
 
     # ---- 公开 API（给 Context / 主程序）---------------------------------
 
-    async def publish(self, topic: str, payload: Any) -> None:
+    async def publish(
+        self, topic: type[Topic], payload: BaseModel | dict[str, Any]
+    ) -> None:
         """投递事件到 topic。立即返回；每个订阅者各起一个 task。
 
-        无订阅者：DEBUG 日志（如 ``llm.exchange`` 这类可选事件常无订阅者）。
+        参数:
+            topic: Topic marker 类（``IMMessage`` / ``SystemReady`` / ...）
+            payload: 遵循 ``topic.Payload`` 契约的实例或 dict
+
+        无订阅者：DEBUG 日志（如 ``LLMExchange`` 这类可选事件常无订阅者）。
         关停中或已停：丢弃，DEBUG 日志。
+        载荷不匹配 ``topic.Payload`` 契约 → 抛 ``pydantic.ValidationError``。
         """
         if not self._running or self._stopping:
-            logger.debug("publish %s: hub not running, drop", topic)
+            logger.debug("publish %s: hub not running, drop", topic.__name__)
             return
+
+        # 契约校验：payload 归一化为 topic.Payload 实例
+        try:
+            validated: BaseModel = topic.Payload.model_validate(payload)
+        except ValidationError:
+            logger.exception("publish %s: payload validation failed", topic.__name__)
+            raise
+
         subs = self._subs.get(topic)
         if subs:
             for sub in subs:
                 self._track(
                     asyncio.create_task(
-                        sub.invoke(payload, self), name=f"{sub.module_name}:{topic}"
+                        sub.invoke(validated, self),
+                        name=f"{sub.module_name}:{topic.name}",
                     )
                 )
         else:
-            logger.debug("publish %s: no subscribers", topic)
+            logger.debug("publish %s: no subscribers", topic.__name__)
 
     def spawn(self, coro: Coroutine[Any, Any, Any], *, name: str) -> asyncio.Task[Any]:
         """注册长任务（被 Context.spawn 包装调用）。"""
@@ -157,7 +181,7 @@ class Hub:
             await self._run_startup()
             if not self._stopping:
                 # 通知所有人 ready —— 这本身也会起若干 task，被纳入 _tasks
-                await self.publish(SYSTEM_READY, {})
+                await self.publish(SystemReady, SystemReadyPayload())
                 # 主循环：等 shutdown 信号
                 try:
                     await self._shutdown_event.wait()
@@ -279,9 +303,39 @@ class Hub:
                     sub = _Subscriber(module_name=bm.module.name, topic=topic, fn=fn, ctx=bm.ctx)
                     bm.subs.append(sub)
                     self._subs.setdefault(topic, []).append(sub)
-        if logger.isEnabledFor(logging.INFO):
-            summary = ", ".join(f"{t}({len(s)})" for t, s in self._subs.items()) or "(none)"
-            logger.info("hub: subscriptions = %s", summary)
+        self._log_subs_summary()
+
+    def _log_subs_summary(self) -> None:
+        """启动时打印一份人类友好的订阅关系表。
+
+        每个 topic 一行：``topic.name (Topic.__name__)  [N sub]  ← [mod1, mod2, ...]``
+        没有订阅者的 topic 不会出现在这里（框架里也没被 @mod.on 注册）。
+        """
+        if not logger.isEnabledFor(logging.INFO):
+            return
+        if not self._subs:
+            logger.info("hub: no topic subscriptions")
+            return
+
+        # 按 topic.name 排序稳定输出
+        entries = sorted(self._subs.items(), key=lambda kv: kv[0].name)
+        name_width = max(len(topic.name) for topic, _ in entries)
+        cls_width = max(len(topic.__name__) for topic, _ in entries)
+
+        logger.info("hub: topic subscriptions (%d topics):", len(entries))
+        for topic, subs in entries:
+            modules = ", ".join(sorted({s.module_name for s in subs}))
+            n_subs = len(subs)
+            logger.info(
+                "  %-*s  (%-*s)  [%d sub%s]  <- [%s]",
+                name_width,
+                topic.name,
+                cls_width,
+                topic.__name__,
+                n_subs,
+                "" if n_subs == 1 else "s",
+                modules,
+            )
 
     async def _run_startup(self) -> None:
         for bm in self._bound:

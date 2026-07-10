@@ -22,6 +22,7 @@ from message.db import (
     build_insert,
 )
 from module import mysql as mysql_mod
+from topics.database import DatabaseWritePayload
 
 # ---------------------------------------------------------------------------
 # DDL 反射
@@ -250,22 +251,28 @@ def _make_ctx(pool=None, tables=None) -> SimpleNamespace:
     )
 
 
-def test_on_write_drops_non_dict_payload() -> None:
+def test_on_write_handles_business_edge_cases() -> None:
+    """on_write 现在只处理业务层边缘 —— payload 结构级校验已在 hub 层完成。
+
+    覆盖：未知表名、pool=None（DB 不可用），都不该抛异常。
+    """
     ctx = _make_ctx()
-    # 非 dict、缺 table、row 不是 dict、未知 table、pool=None — 都不该抛
-    asyncio.run(mysql_mod.on_write(ctx, "not a dict"))
-    asyncio.run(mysql_mod.on_write(ctx, {}))
-    asyncio.run(mysql_mod.on_write(ctx, {"table": "llm_exchange", "row": "bad"}))
-    asyncio.run(mysql_mod.on_write(ctx, {"table": "no_such_table", "row": {}}))
+    # 未知 table：警告 + skip
+    asyncio.run(
+        mysql_mod.on_write(
+            ctx, DatabaseWritePayload(table="no_such_table", row={})
+        )
+    )
+    # pool=None（setup 失败降级）：debug + skip
     asyncio.run(
         mysql_mod.on_write(
             ctx,
-            {
-                "table": "llm_exchange",
-                "row": {"prompt": "x", "response": "y", "model": "m", "platform": "p"},
-            },
+            DatabaseWritePayload(
+                table="llm_exchange",
+                row={"prompt": "x", "response": "y", "model": "m", "platform": "p"},
+            ),
         )
-    )  # pool=None → drop
+    )
 
 
 def test_on_write_with_fake_pool_executes_insert() -> None:
@@ -286,16 +293,16 @@ def test_on_write_with_fake_pool_executes_insert() -> None:
     pool.acquire = MagicMock(return_value=conn)
 
     ctx = _make_ctx(pool=pool)
-    payload = {
-        "table": "llm_exchange",
-        "row": {
+    payload = DatabaseWritePayload(
+        table="llm_exchange",
+        row={
             "session_id": "qq:group:1",
             "prompt": "hi",
             "response": "hello",
             "model": "gpt-4o",
             "platform": "qq",
         },
-    }
+    )
     asyncio.run(mysql_mod.on_write(ctx, payload))
 
     cursor.execute.assert_awaited_once()

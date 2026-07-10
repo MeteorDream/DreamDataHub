@@ -11,8 +11,8 @@ from __future__ import annotations
 import json
 
 from hub import Context, Module
-from hub.topics import IM_MESSAGE, IM_REPLY
 from message.bot import BotEvent, TextSegment
+from topics.im import IMMessage, IMReply
 from module.llm_openai import LLMChatParams, LLMChatService
 from module.weather import (
     WeatherForecastParams,
@@ -26,7 +26,7 @@ mod = Module(
 )
 
 
-@mod.on(IM_MESSAGE)
+@mod.on(IMMessage)
 async def entry(ctx: Context, event: BotEvent) -> None:
     """入口：判断意图 → 查天气 → 回复。"""
     if event.sub_type == "overhear":
@@ -119,7 +119,7 @@ async def entry(ctx: Context, event: BotEvent) -> None:
         session_id=event.session_id,
         session_name=event.session_name,
     )
-    await ctx.publish(IM_REPLY, reply_event)
+    await ctx.publish(IMReply, reply_event)
     ctx.logger.info("weather reply published for city=%s", city)
 
 

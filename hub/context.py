@@ -18,6 +18,7 @@ from pydantic import BaseModel
 if TYPE_CHECKING:
     from hub.capabilities import Capability
     from hub.core import Hub
+    from hub.topic import Topic
 
 
 class Context:
@@ -39,8 +40,19 @@ class Context:
         self.state = SimpleNamespace()
         self.hub_event = hub_event  # shutdown 时被置位
 
-    async def publish(self, topic: str, payload: Any) -> None:
-        """投递一条事件到总线。立即返回（fire-and-forget）。"""
+    async def publish(
+        self, topic: type[Topic], payload: BaseModel | dict[str, Any]
+    ) -> None:
+        """投递事件到 topic。立即返回（fire-and-forget）。
+
+        参数:
+            topic: Topic marker 类（例如 ``IMMessage``）
+            payload: ``topic.Payload`` 实例，或任何能被
+                     ``topic.Payload.model_validate`` 接受的数据（dict 也可）
+
+        载荷会由 Hub 做一次 ``model_validate`` 归一化，契约违反立即抛
+        ``pydantic.ValidationError``（不会静默广播错误数据给订阅者）。
+        """
         await self._hub.publish(topic, payload)
 
     async def invoke(

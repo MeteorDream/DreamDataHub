@@ -29,9 +29,10 @@ from telegram.ext import (
 )
 
 from hub import Context
-from hub.topics import DATABASE_WRITE, TELEGRAM_MESSAGE
 from message.bot import BotEvent, TextSegment
 from message.db import BotMessageRecord
+from topics.database import DatabaseWrite, DatabaseWritePayload
+from topics.telegram import TelegramMessage
 from module.weather import Weather
 
 from .base_bot import BaseTelegramHandle
@@ -126,7 +127,7 @@ class DreamBotHandle(BaseTelegramHandle):
             )
 
     async def text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """消息投递到 TELEGRAM_MESSAGE"""
+        """消息投递到 TelegramMessage"""
         msg = update.effective_message
         if msg is None or msg.text is None:
             return
@@ -152,13 +153,13 @@ class DreamBotHandle(BaseTelegramHandle):
             session_id=f"tg:{chat_id}",
             session_name=str(update.effective_chat.title) if update.effective_chat else "",
         )
-        await self.ctx.publish(TELEGRAM_MESSAGE, event)
+        await self.ctx.publish(TelegramMessage, event)
         await self.ctx.publish(
-            DATABASE_WRITE,
-            {
-                "table": BotMessageRecord.__table__,
-                "row": BotMessageRecord.from_event(event).model_dump(),
-            },
+            DatabaseWrite,
+            DatabaseWritePayload(
+                table=BotMessageRecord.__table__,
+                row=BotMessageRecord.from_event(event).model_dump(),
+            ),
         )
         self.ctx.logger.info(
             "[Telegram] User: %s chat: %s(%s) Text message: %s",

@@ -1,4 +1,4 @@
-"""Hub 单元测试 — 路由、错误隔离、生命周期顺序。
+"""Hub 单元测试 — 路由、错误隔离、生命周期顺序、Capability、依赖解析。
 
 只测纯框架行为，不依赖任何外部模块或 pytest-asyncio。
 每个测试用例自己 ``asyncio.run`` 驱动 hub。
@@ -7,15 +7,53 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from hub import Capability, Context, Hub, Module
+from hub import Capability, Context, Hub, Module, Topic
 from hub.core import CapabilityNotFoundError
 from hub.loader import _resolve_dependencies
-from hub.topics import SYSTEM_ERROR, SYSTEM_READY
+from topics.system import (
+    SystemError,
+    SystemErrorPayload,
+    SystemReady,
+    SystemReadyPayload,
+)
+
+
+# ---------------------------------------------------------------------------
+# 测试用 Topic / Capability / Payload
+# ---------------------------------------------------------------------------
+
+
+class _GreetPayload(BaseModel):
+    text: str
+
+
+class _GreetTopic(Topic):
+    name: ClassVar[str] = "test.greet"
+    Payload: ClassVar[type[BaseModel]] = _GreetPayload
+
+
+class _EchoParams(BaseModel):
+    text: str
+
+
+class _EchoResult(BaseModel):
+    echoed: str
+
+
+class _EchoService(Capability):
+    name: ClassVar[str] = "test.echo"
+    Params: ClassVar[type[BaseModel]] = _EchoParams
+    Result: ClassVar[type[BaseModel]] = _EchoResult
+
+
+# ---------------------------------------------------------------------------
+# helper
+# ---------------------------------------------------------------------------
 
 
 async def _run_until(hub: Hub, predicate, timeout: float = 2.0) -> None:
@@ -32,52 +70,58 @@ async def _run_until(hub: Hub, predicate, timeout: float = 2.0) -> None:
         await runner
 
 
+# ---------------------------------------------------------------------------
+# Topic routing / lifecycle
+# ---------------------------------------------------------------------------
+
+
 def test_publish_routes_to_subscriber() -> None:
-    sent: list[Any] = []
+    sent: list[_GreetPayload] = []
     a = Module("publisher")
     b = Module("subscriber")
 
     @a.on_startup
     async def kick(ctx: Context) -> None:
-        await ctx.publish("greet", "hello")
+        await ctx.publish(_GreetTopic, _GreetPayload(text="hello"))
 
-    @b.on("greet")
-    async def recv(_ctx: Context, payload: Any) -> None:
+    @b.on(_GreetTopic)
+    async def recv(_ctx: Context, payload: _GreetPayload) -> None:
         sent.append(payload)
 
     async def go() -> None:
         hub = Hub()
         hub.register(a)
         hub.register(b)
-        await _run_until(hub, lambda: sent == ["hello"])
+        await _run_until(hub, lambda: bool(sent))
 
     asyncio.run(go())
-    assert sent == ["hello"]
+    assert len(sent) == 1
+    assert sent[0].text == "hello"
 
 
 def test_handler_exception_does_not_kill_hub() -> None:
-    errors: list[dict] = []
+    errors: list[SystemErrorPayload] = []
     survived: list[str] = []
 
     bad = Module("bad")
     good = Module("good")
     sink = Module("sink")
 
-    @bad.on("topic")
-    async def crash(_ctx: Context, _payload: Any) -> None:
+    @bad.on(_GreetTopic)
+    async def crash(_ctx: Context, _payload: _GreetPayload) -> None:
         raise RuntimeError("boom")
 
-    @good.on("topic")
-    async def ok(_ctx: Context, _payload: Any) -> None:
+    @good.on(_GreetTopic)
+    async def ok(_ctx: Context, _payload: _GreetPayload) -> None:
         survived.append("ok")
 
-    @sink.on(SYSTEM_ERROR)
-    async def on_err(_ctx: Context, payload: dict) -> None:
+    @sink.on(SystemError)
+    async def on_err(_ctx: Context, payload: SystemErrorPayload) -> None:
         errors.append(payload)
 
     @bad.on_startup
     async def kick(ctx: Context) -> None:
-        await ctx.publish("topic", None)
+        await ctx.publish(_GreetTopic, _GreetPayload(text="ping"))
 
     async def go() -> None:
         hub = Hub()
@@ -88,8 +132,9 @@ def test_handler_exception_does_not_kill_hub() -> None:
 
     asyncio.run(go())
     assert survived == ["ok"], "good handler must run despite bad's exception"
-    assert errors and errors[0]["module"] == "bad"
-    assert "boom" in errors[0]["exc"]
+    assert errors
+    assert errors[0].module == "bad"
+    assert "boom" in errors[0].exc
 
 
 def test_lifecycle_order_lifo_shutdown() -> None:
@@ -132,8 +177,8 @@ def test_system_ready_fires_after_all_startups() -> None:
     async def a_up(_ctx: Context) -> None:
         seen.append("a:up")
 
-    @b.on(SYSTEM_READY)
-    async def on_ready(_ctx: Context, _payload: Any) -> None:
+    @b.on(SystemReady)
+    async def on_ready(_ctx: Context, _payload: SystemReadyPayload) -> None:
         seen.append("b:ready")
 
     async def go() -> None:
@@ -146,12 +191,13 @@ def test_system_ready_fires_after_all_startups() -> None:
     assert seen.index("a:up") < seen.index("b:ready")
 
 
-def test_publish_to_unknown_topic_is_quiet() -> None:
+def test_publish_to_unsubscribed_topic_is_quiet() -> None:
+    """publish 到没有订阅者的 topic 只在 DEBUG 日志里记一条，不抛。"""
     a = Module("solo")
 
     @a.on_startup
     async def kick(ctx: Context) -> None:
-        await ctx.publish("nobody.listening", "oops")
+        await ctx.publish(_GreetTopic, _GreetPayload(text="nobody listening"))
 
     async def go() -> None:
         hub = Hub()
@@ -159,6 +205,28 @@ def test_publish_to_unknown_topic_is_quiet() -> None:
         await _run_until(hub, lambda: True)
 
     asyncio.run(go())  # 不抛即 OK
+
+
+def test_publish_validates_payload() -> None:
+    """publish 时 payload 不匹配 Topic.Payload 契约 → 抛 ValidationError。"""
+    a = Module("bad_publisher")
+    raised: list[bool] = []
+
+    @a.on_startup
+    async def kick(ctx: Context) -> None:
+        try:
+            # _GreetPayload 需要 text: str，但传 dict 里缺 text
+            await ctx.publish(_GreetTopic, {"wrong_field": 1})
+        except ValidationError:
+            raised.append(True)
+
+    async def go() -> None:
+        hub = Hub()
+        hub.register(a)
+        await _run_until(hub, lambda: raised == [True])
+
+    asyncio.run(go())
+    assert raised == [True]
 
 
 def test_duplicate_module_registration_rejected() -> None:
@@ -169,22 +237,20 @@ def test_duplicate_module_registration_rejected() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Capability / invoke / requires / topological sort
+# Topic 校验（marker class 类型检查）
 # ---------------------------------------------------------------------------
 
 
-class _EchoParams(BaseModel):
-    text: str
+def test_on_with_non_topic_class_rejected() -> None:
+    """@mod.on() 接受非 Topic 类应立即抛 TypeError。"""
+    m = Module("solo")
+    with pytest.raises(TypeError, match="Topic subclass"):
+        m.on("not a topic")  # type: ignore[arg-type]
 
 
-class _EchoResult(BaseModel):
-    echoed: str
-
-
-class _EchoService(Capability):
-    name: ClassVar[str] = "test.echo"
-    Params: ClassVar[type[BaseModel]] = _EchoParams
-    Result: ClassVar[type[BaseModel]] = _EchoResult
+# ---------------------------------------------------------------------------
+# Capability / invoke / requires / topological sort
+# ---------------------------------------------------------------------------
 
 
 def test_ctx_invoke_calls_capability() -> None:
@@ -336,4 +402,3 @@ def test_cyclic_dependency_detected() -> None:
 
     with pytest.raises(RuntimeError, match="cyclic"):
         _resolve_dependencies([ma, mb])
-
