@@ -31,9 +31,15 @@ from telegram.ext import (
 from hub import Context
 from message.bot import BotEvent, TextSegment
 from message.db import BotMessageRecord
+from module.weather import (
+    WeatherForecastParams,
+    WeatherForecastService,
+    WeatherLocationParams,
+    WeatherLocationService,
+)
+from services.weather.formatter import build_weather_message
 from topics.database import DatabaseWrite, DatabaseWritePayload
 from topics.telegram import TelegramMessage
-from module.weather import Weather
 
 from .base_bot import BaseTelegramHandle
 
@@ -243,15 +249,21 @@ class DreamBotHandle(BaseTelegramHandle):
         await update.message.reply_text(
             f"Update Location success, Latitude: {location.latitude}, Longitude: {location.longitude}"
         )
-        msg, location_info = await Weather.amap_location(location.longitude, location.latitude)
-        context.user_data["location_info"] = location_info
-        if msg:
-            await update.message.reply_text(f"Get address from location failed, message: {msg}")
-        else:
-            address = location_info.get("formatted_address", "未知")
-            await update.message.reply_text(
-                f"Get address from location success, Address: {address}"
+        try:
+            location_info = await self.ctx.invoke(
+                WeatherLocationService,
+                WeatherLocationParams(
+                    longitude=location.longitude, latitude=location.latitude
+                ),
             )
+        except RuntimeError as exc:
+            await update.message.reply_text(f"Get address from location failed: {exc}")
+            return
+        context.user_data["location_info"] = location_info
+        address = location_info.formatted_address or "未知"
+        await update.message.reply_text(
+            f"Get address from location success, Address: {address}"
+        )
 
     async def get_location(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
@@ -263,9 +275,10 @@ class DreamBotHandle(BaseTelegramHandle):
                 "You have not shared your location yet. Please share your location with me!"
             )
             return
-        address = context.user_data.get("location_info", {}).get("formatted_address", "未知")
+        address = context.user_data.get("location_info")
+        address_str = address.formatted_address if address else "未知"
         await update.message.reply_text(
-            f"Your current location as Latitude: {location[0]}, Longitude: {location[1]}, Address: {address}"
+            f"Your current location as Latitude: {location[0]}, Longitude: {location[1]}, Address: {address_str}"
         )
 
     async def get_weather(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -273,7 +286,7 @@ class DreamBotHandle(BaseTelegramHandle):
             self.ctx.logger.info("telegram_bot: get weather don't have message, skip")
             return
 
-        location_info = context.user_data.get("location_info", {})
+        location_info = context.user_data.get("location_info")
 
         if not location_info:
             await update.message.reply_text(
@@ -281,23 +294,34 @@ class DreamBotHandle(BaseTelegramHandle):
             )
             return
 
-        country = location_info.get("addressComponent", {}).get("country")
-        city = location_info.get("addressComponent", {}).get("city")
-        province = location_info.get("addressComponent", {}).get("province")
-        district = location_info.get("addressComponent", {}).get("district")
-
-        address = f"{country}{province}{city}{district}"
-
-        message, weather_info = await Weather.amap_weather(
-            location_info.get("addressComponent", {}).get("adcode")
+        # location_info 是 LocationData 实例
+        address = "".join(
+            [
+                location_info.country,
+                location_info.province,
+                location_info.city,
+                location_info.district,
+            ]
         )
-        if message:
+        adcode = location_info.adcode
+        if not adcode:
             await update.message.reply_text(
-                f"Get weather from location failed, address: {address}, message: {message}"
+                f"Get weather failed: no adcode for address {address}"
             )
             return
 
-        weather_message = Weather.build_weather_message(
-            weather_info, parse_mode="html", address=address
+        try:
+            forecast = await self.ctx.invoke(
+                WeatherForecastService,
+                WeatherForecastParams(adcode=adcode),
+            )
+        except RuntimeError as exc:
+            await update.message.reply_text(
+                f"Get weather from location failed, address: {address}, message: {exc}"
+            )
+            return
+
+        weather_message = build_weather_message(
+            forecast, parse_mode="html", address=address
         )
         await update.message.reply_html(weather_message)

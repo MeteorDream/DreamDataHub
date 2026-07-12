@@ -52,19 +52,25 @@ system_prompt = "You are a helpful assistant."
 max_context_tokens = 64000
 
 # --- Util: Weather ----------------------------------------------------------
-# weather 工具类, 必须启用才能支持天气推送功能
+# 天气模块：通过 provider 字段选择数据源，具体 provider config 走子表
+# 多 provider 抽象实现在 services/weather/ 目录下（base.py + 各 provider 文件）
 [module.weather]
 enabled = true
-## scheduler 控制周期推送功能调度, 需要传递 cron 字符串(例如每天推送: 0 8 * * *), 留空表示不进行周期推送
+# provider = "amap" | "baidumap" | "xinzhi" ...  见 services/weather/__init__.py:PROVIDERS
+provider = "amap"
+# cron 周期推送（暂未接入推送目标，只做占位）；留空表示不推送
 schedule = ""
-# 支持往多个 im 通道发送
-platform = ["telegram"]
-chat_id = [""]
-sub_type = [""]
-message_type = [""]
-# 第三方获取 weather 的平台配置
-# 高德
-amap_key = "amap_key"
+
+# provider 特定配置：table key 必须与 provider 字段一致
+[module.weather.amap]
+key = "your_amap_key_here"
+timeout = 15.0
+
+# 未来其他 provider（示例）：
+# [module.weather.baidumap]
+# key = "your_baidu_key"
+# [module.weather.xinzhi]
+# key = "your_xinzhi_key"
 
 # --- WorkFlow ----------------------------------------------------------------
 # 天气助理编排模块 —— 订阅 im.message，通过 ctx.invoke 调用 llm.chat 和 weather.forecast

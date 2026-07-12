@@ -48,14 +48,25 @@ message/                # 消息协议模型（Pydantic BotEvent + DB 表 schema
 ├── bot.py
 └── db.py
 
+services/               # 外部服务客户端（不依赖 hub，可独立使用）
+├── weibo.py            #   Weibo 类（微博 Web API 客户端 + QR 登录）
+└── weather/            #   多 provider 天气客户端
+    ├── base.py         #     WeatherProvider ABC + LocationData/ForecastData 统一模型
+    ├── amap.py         #     AMapProvider 具体实现
+    ├── formatter.py    #     消息格式化（HTML / MarkdownV2 / 纯文本）
+    └── __init__.py     #     PROVIDERS registry（加新 provider 在这里注册）
+
 module/                 # 具体业务模块（一个 Module 实例一个文件）
 ├── heartbeat.py / echo.py
 ├── im_qq.py / telegram_bot.py
 ├── llm_openai.py       #   Capability: LLMChatService
-├── weather.py          #   Capability: WeatherForecast / WeatherLocation
+├── weather.py          #   Capability: WeatherForecast / WeatherLocation（provider 分发到 services/weather/）
 ├── weather_assistant.py#   编排：subscribe IMMessage, invoke LLM + weather
 └── mysql.py
 ```
+
+**层次约定**：`module/` 使用 `services/`，反之不成立。Module 层负责 hub 生命周期
+（config → Config 对象 → client 实例 → 挂到 ctx.state），services 层是纯客户端库。
 
 ### 声明一个 Module
 
@@ -220,6 +231,49 @@ Loader 加载模块清单时会：
 | `ctx.logger` | 命名为 `module.<name>` 的 logger |
 | `ctx.hub_event` | shutdown 信号的 `asyncio.Event`，长任务循环里用来退出 |
 
+### 多 provider 抽象（services/weather 为例）
+
+某些 module 只是**外部服务的门面**——真正的 API 客户端放在 `services/` 目录里，
+Module 只做"config 翻译 + 生命周期管理 + Capability provides"。
+
+**Weather 的多 provider 结构**：
+
+```
+services/weather/
+├── base.py         # WeatherProvider ABC + LocationData/ForecastData 统一模型
+├── amap.py         # AMapProvider + AMapConfig
+└── __init__.py     # PROVIDERS = {"amap": (AMapProvider, AMapConfig), ...}
+```
+
+`module/weather.py` 里：
+
+```python
+provider_name = cfg.get("provider", "amap")
+provider_cls, config_cls = PROVIDERS[provider_name]
+provider_cfg = config_cls.model_validate(cfg.get(provider_name) or {})
+ctx.state.provider = provider_cls(provider_cfg)
+```
+
+TOML 里：
+
+```toml
+[module.weather]
+provider = "amap"
+
+[module.weather.amap]
+key = "your_amap_key"
+```
+
+**加新 provider 三步**：
+1. 建 `services/weather/<name>.py`，实现 `class <Name>Provider(WeatherProvider)` +
+   `class <Name>Config(WeatherProviderConfig)`
+2. 在 `services/weather/__init__.py:PROVIDERS` 里加一行
+3. TOML 里改 `provider = "<name>"` + 加 `[module.weather.<name>]` 段
+
+**关键设计**：所有 provider 的 `forecast()` / `location()` 返回统一的
+`ForecastData` / `LocationData`（Pydantic 模型），调用方不感知 provider 差异。
+展示层 `services/weather/formatter.py:build_weather_message()` 也接受统一模型。
+
 ### 现有内置模块
 
 | 模块 | 订阅 topic | 提供 capability | 说明 |
@@ -228,7 +282,7 @@ Loader 加载模块清单时会：
 | `im_qq` | `IMReply` / `QQReply` | — | OneBot v11/napcat WebSocket，跨平台 `IMMessage` 双发 |
 | `telegram_bot` | `TelegramReply` | — | python-telegram-bot 22.x |
 | `llm_openai` | `IMMessage` | `LLMChatService` | OpenAI 兼容接口；顺带发布 `LLMExchange` |
-| `weather` | — | `WeatherForecastService` / `WeatherLocationService` | 高德天气 API |
+| `weather` | — | `WeatherForecastService` / `WeatherLocationService` | provider 可切换（amap / baidumap / xinzhi ...），实现在 `services/weather/` |
 | `mysql` | `DatabaseWrite` | — | aiomysql 池，按 Pydantic model 自动 DDL |
 | `weather_assistant` | `IMMessage` | — | 编排：意图判断 → 查天气 → 生成回复 |
 | `echo` | `SystemReady` / `IMMessage` / `IMReply` | — | 冒烟模块 |

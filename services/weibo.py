@@ -32,8 +32,37 @@ from typing import Any, ClassVar, Literal
 from urllib.parse import parse_qs, urlparse
 
 import httpx
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# 配置
+# ---------------------------------------------------------------------------
+
+
+class WeiboConfig(BaseModel):
+    """``Weibo`` 客户端配置。可从 TOML 通过 ``WeiboConfig.model_validate(dict)`` 构造。
+
+    调用方也可以直接 ``Weibo()``（用全部默认值）或 ``Weibo(cookies=..., timeout=...)``
+    传关键字参数——参见 :class:`Weibo` 的 ``__init__`` 签名。
+    """
+
+    model_config = {"extra": "ignore"}
+
+    cookies: dict[str, str] = Field(
+        default_factory=dict,
+        description="已登录 cookie，至少含 SUB/SUBP 才能访问鉴权接口",
+    )
+    timeout: float = Field(default=30.0, ge=0, description="HTTP 请求超时（秒）")
+    request_delay: float = Field(
+        default=1.0, ge=0, description="相邻请求最小间隔（秒），0 关闭节流"
+    )
+    max_retries: int = Field(
+        default=3, ge=0, le=10, description="429/5xx/网络错误最大重试次数"
+    )
+
 
 
 # ---------------------------------------------------------------------------
@@ -227,16 +256,32 @@ class Weibo:
 
     def __init__(
         self,
-        cookies: dict[str, str] | None = None,
+        config: WeiboConfig | None = None,
         *,
-        timeout: float = 30.0,
-        request_delay: float = 1.0,
-        max_retries: int = 3,
+        cookies: dict[str, str] | None = None,
+        timeout: float | None = None,
+        request_delay: float | None = None,
+        max_retries: int | None = None,
     ) -> None:
-        self._cookies = dict(cookies or {})
-        self._timeout = timeout
-        self._request_delay = request_delay
-        self._max_retries = max_retries
+        """构造 Weibo 客户端。
+
+        推荐用法（config 一次注入）::
+
+            wb = Weibo(WeiboConfig(cookies={"SUB": "...", "SUBP": "..."}))
+
+        便捷用法（关键字参数，测试 / REPL 常用）::
+
+            wb = Weibo(cookies={"SUB": "..."}, timeout=15)
+
+        两种用法可以混用；关键字参数会覆盖 ``config`` 里对应字段。
+        """
+        cfg = config or WeiboConfig()
+        self._cookies = dict(cookies if cookies is not None else cfg.cookies)
+        self._timeout = timeout if timeout is not None else cfg.timeout
+        self._request_delay = (
+            request_delay if request_delay is not None else cfg.request_delay
+        )
+        self._max_retries = max_retries if max_retries is not None else cfg.max_retries
 
         self._client: httpx.AsyncClient | None = None
         self._mobile_client: httpx.AsyncClient | None = None
@@ -771,102 +816,3 @@ async def _finalize_qr_login(
 
     return cookies
 
-if __name__ == "__main__":
-    # 简单接口冒烟测试 —— 直接运行本文件，需登录接口用下面的硬编码 cookies。
-    # 后续接入 hub 后就删掉这一段。
-
-    import json
-
-
-    # TODO: 填自己的 cookies，或先跑 QR 登录段拿到再填回来
-    COOKIES: dict[str, str] = {
-        "SUB": "",
-        "SUBP": "",
-    }
-    # 微博 mblogid（短 ID）和 uid，随便找一条公开微博 / 用户即可
-    TEST_MBLOGID = "Qw06Kd98p"
-    TEST_UID = "1871802012"  # 央视新闻
-
-    async def _smoke() -> None:
-        # 1. 热搜（公开，不需登录）
-        async with Weibo() as wb:
-            hot = await wb.get_hot_search()
-        print("\n[hot_search]: ")
-        print(json.dumps(hot, ensure_ascii=False, indent=2))
-        realtime = hot.get("realtime") or []
-        print(f"\n[hot_search] realtime top5 of {len(realtime)}:")
-        for i, item in enumerate(realtime[:5], 1):
-            print(f"  {i}. {item.get('word', '?'):<30} num={item.get('num', 0)}")
-
-        # 2. 完整热搜榜（公开）
-        async with Weibo() as wb:
-            band = await wb.get_hot_band()
-        print(f"\n[hot_band]: ")
-        print(json.dumps(band, ensure_ascii=False, indent=2))
-        band_list = band.get("band_list") or []
-        print(f"\n[hot_band] band_list top5 of {len(band_list)}:")
-        for i, item in enumerate(band_list[:5], 1):
-            label = item.get("label_name") or ""
-            print(f"  {i}. [{label:<3}] {item.get('word', '?')}")
-
-        # 3. 需登录的接口
-        if not COOKIES.get("SUB") or not COOKIES.get("SUBP"):
-            print("\n[skip] COOKIES 未填，跳过 detail/profile/weibos")
-            return
-
-        async with Weibo(cookies=COOKIES) as wb:
-            detail = await wb.get_weibo_detail(TEST_MBLOGID)
-            print(f"\n[detail]:")
-            print(json.dumps(detail, ensure_ascii=False, indent=2))
-            print(f"\n[detail] {TEST_MBLOGID}:")
-            print(f"  user     : {(detail.get('user') or {}).get('screen_name')}")
-            print(f"  reposts  : {detail.get('reposts_count', 0)}")
-            print(f"  comments : {detail.get('comments_count', 0)}")
-            text = (detail.get("text_raw") or "").strip()
-            print(f"  text     : {text[:120]}{'...' if len(text) > 120 else ''}")
-
-            profile = await wb.get_profile(TEST_UID)
-            user = profile.get("user") or {}
-            print(f"\n[profile]:")
-            print(json.dumps(profile, ensure_ascii=False, indent=2))
-            print(f"\n[profile] uid={TEST_UID}:")
-            print(f"  screen_name : {user.get('screen_name')}")
-            print(f"  followers   : {user.get('followers_count', 0)}")
-            print(f"  statuses    : {user.get('statuses_count', 0)}")
-
-            weibos = await wb.get_user_weibos(TEST_UID, page=1)
-            print(f"\n[weibos]:")
-            print(json.dumps(weibos, ensure_ascii=False, indent=2))
-            items = weibos.get("list") or []
-            print(f"\n[weibos] uid={TEST_UID} page=1 count={len(items)}")
-            for i, item in enumerate(items[:3], 1):
-                t = (item.get("text_raw") or "").strip().replace("\n", " ")
-                print(f"  {i}. [{item.get('created_at', '?')}] {t[:80]}")
-
-    async def _smoke_qr() -> None:
-        # 单独跑扫码登录冒烟：拿到二维码 URL → 每 2s 轮询直到 success/expired。
-        # 想跑就把下面的 asyncio.run(_smoke_qr()) 打开、_smoke() 那行注释掉。
-        session = await Weibo.qr_login_start()
-        print(f"[qr] qrid    = {session.qrid[:24]}...")
-        print(f"[qr] image   = {session.image_url}")
-        print(f"[qr] scan    = {session.scan_url}")
-        print("[qr] 请用微博 APP 扫码，最多轮询 4 分钟...")
-
-        for i in range(120):
-            result = await Weibo.qr_login_check(session)
-            print(f"[qr #{i + 1:>3}] status={result.status} retcode={result.retcode} msg={result.message!r}")
-            if result.status == "success":
-                print(f"[qr] ✅ 成功！cookies keys: {sorted(result.cookies)}")
-                # cookies keys: ['ALC', 'ALF', 'SCF', 'SUB', 'SUBP', 'X-CSRF-TOKEN']
-                print(f"[qr] cookies (完整) = {result.cookies}")
-                # {'X-CSRF-TOKEN': '', 'SCF': '', 'SUB': '', 'SUBP': '', 'ALF': '', 'ALC': ''}
-                return
-            if result.status == "expired":
-                print("[qr] ❌ 已过期")
-                return
-            await asyncio.sleep(2)
-        print("[qr] ⏰ 超时未完成")
-
-    asyncio.run(_smoke())
-    # asyncio.run(_smoke_qr())
-    

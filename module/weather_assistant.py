@@ -12,12 +12,12 @@ import json
 
 from hub import Context, Module
 from message.bot import BotEvent, TextSegment
-from topics.im import IMMessage, IMReply
 from module.llm_openai import LLMChatParams, LLMChatService
 from module.weather import (
     WeatherForecastParams,
     WeatherForecastService,
 )
+from topics.im import IMMessage, IMReply
 
 # 通过 requires 声明本模块依赖的能力：loader 会做严格校验和拓扑排序。
 mod = Module(
@@ -72,14 +72,14 @@ async def entry(ctx: Context, event: BotEvent) -> None:
     try:
         forecast = await ctx.invoke(
             WeatherForecastService,
-            WeatherForecastParams(adcode="440305", city=city),
+            WeatherForecastParams(adcode="440305"),
         )
     except Exception:
         ctx.logger.exception("weather query failed")
         return
 
-    forecasts = getattr(forecast, "forecasts", []) or [{}]
-    weather_str = json.dumps(forecasts, ensure_ascii=False)
+    # forecast 是 ForecastData 实例（services 层的统一模型）
+    weather_str = forecast.model_dump_json(exclude={"raw"})
 
     # Step 3: 生成自然语言回复
     reply = await ctx.invoke(

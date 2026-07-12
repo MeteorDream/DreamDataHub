@@ -3,18 +3,24 @@
 订阅 ``TELEGRAM_REPLY``，把消息发回到对应 chat；
 入站消息转成 ``BotEvent`` 发到 ``TELEGRAM_MESSAGE``。
 
-
+**依赖**：``/location`` / ``/weather`` 命令需要 weather 模块的两个 capability，
+所以本模块 ``requires=[WeatherLocationService, WeatherForecastService]``。
+如果不需要这两个命令，未来可以把 weather 相关的 handler 拆到独立模块。
 """
 
 from __future__ import annotations
 
 from hub import Context, Module
 from message.bot import BotEvent
+from module.weather import WeatherForecastService, WeatherLocationService
 from topics.telegram import TelegramReply
 
 from .telegram_bot_handle.dream_bot import DreamBotHandle
 
-mod = Module("telegram_bot")
+mod = Module(
+    "telegram_bot",
+    requires=[WeatherLocationService, WeatherForecastService],
+)
 
 DEVELOPER_CHAT_ID = -5579430112
 
