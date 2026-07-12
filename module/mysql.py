@@ -1,7 +1,11 @@
 """mysql — 通用数据库写入模块。
 
-订阅 :class:`DatabaseWrite`（payload: ``DatabaseWritePayload{table, row}``）。
-按 ``message/db.py:TABLES`` 里注册的 Pydantic 模型校验 row、生成参数化 INSERT。
+订阅 :class:`DatabaseWrite`（payload: ``DatabaseWritePayload{table, row, upsert}``）。
+按 ``message/db.py:TABLES`` 里注册的 Pydantic 模型校验 row、生成参数化 INSERT
+（或 upsert）。
+
+对外提供 :class:`UserQueryService` 能力 —— 按 ``(platform, user_id)`` 查 user 表。
+不做通用的"任意查询"接口，避免 SQL 注入面 + 让调用方直接依赖强类型契约。
 
 启动时按 ``enabled_tables`` 自动 ``CREATE TABLE IF NOT EXISTS``——schema 改字段
 仍需手动 ALTER（v1 不带迁移）。
@@ -11,12 +15,45 @@
 
 from __future__ import annotations
 
-import aiomysql
-from pydantic import ValidationError
+import json
+from typing import ClassVar
 
-from hub import Context, Module
-from message.db import TABLES, DBRecord, build_create_ddl, build_insert
+import aiomysql
+from pydantic import BaseModel, Field, ValidationError
+
+from hub import Capability, Context, Module
+from message.db import TABLES, DBRecord, UserRecord, build_create_ddl, build_insert
 from topics.database import DatabaseWrite, DatabaseWritePayload
+
+# ---------------------------------------------------------------------------
+# UserQueryService — 按 (platform, user_id) 查 user 表
+# ---------------------------------------------------------------------------
+
+
+class UserQueryParams(BaseModel):
+    """``UserQueryService`` 入参 —— (platform, user_id) 联合唯一。"""
+
+    platform: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+
+
+class UserQueryResult(BaseModel):
+    """``UserQueryService`` 返回值。
+
+    ``found=False`` 时 ``user`` 为 None；调用方按需处理"用户未记录"场景。
+    """
+
+    found: bool = False
+    user: UserRecord | None = None
+
+
+class UserQueryService(Capability):
+    """按 (platform, user_id) 查 user 表；找不到时 found=False。"""
+
+    name: ClassVar[str] = "user.query"
+    Params: ClassVar[type[BaseModel]] = UserQueryParams
+    Result: ClassVar[type[BaseModel]] = UserQueryResult
+
 
 mod = Module("mysql")
 
@@ -109,7 +146,7 @@ async def on_write(ctx: Context, payload: DatabaseWritePayload) -> None:
         return
 
     try:
-        sql, params = build_insert(model, row)
+        sql, params = build_insert(model, row, upsert=payload.upsert)
     except ValidationError as exc:
         ctx.logger.warning("mysql: row validation failed for %s: %s", table, exc)
         return
@@ -121,10 +158,63 @@ async def on_write(ctx: Context, payload: DatabaseWritePayload) -> None:
         async with pool.acquire() as conn, conn.cursor() as cur:
             await cur.execute(sql, params)
             ctx.logger.info(
-                "mysql: insert ok table=%s lastrowid=%s rows=%d",
+                "mysql: %s ok table=%s lastrowid=%s rows=%d",
+                "upsert" if payload.upsert else "insert",
                 table,
                 cur.lastrowid,
                 cur.rowcount,
             )
     except Exception:
-        ctx.logger.exception("mysql: insert failed table=%s", table)
+        ctx.logger.exception("mysql: write failed table=%s", table)
+
+
+@mod.provides(UserQueryService)
+async def query_user(ctx: Context, params: UserQueryParams) -> UserQueryResult:
+    """按 (platform, user_id) 查 user 表。找不到时 found=False。
+
+    调用方必须启用 ``user`` 表（``enabled_tables`` 里包含 ``"user"``），否则
+    抛 RuntimeError（配置错误）。
+    """
+    if UserRecord.__table__ not in ctx.state.tables:
+        raise RuntimeError(
+            f"UserQueryService: table {UserRecord.__table__!r} not enabled "
+            f"(add to config.enabled_tables)"
+        )
+    pool = ctx.state.pool
+    if pool is None:
+        raise RuntimeError("UserQueryService: mysql pool unavailable")
+
+    # 参数化查询防注入；列顺序按 UserRecord 字段声明顺序，方便 dict 组装
+    col_names = list(UserRecord.model_fields.keys())
+    cols_sql = ", ".join(f"`{c}`" for c in col_names)
+    sql = (
+        f"SELECT {cols_sql} FROM `{UserRecord.__table__}` "
+        f"WHERE `platform` = %s AND `user_id` = %s LIMIT 1"
+    )
+
+    try:
+        async with pool.acquire() as conn, conn.cursor() as cur:
+            await cur.execute(sql, (params.platform, params.user_id))
+            row = await cur.fetchone()
+    except Exception:
+        ctx.logger.exception(
+            "user.query failed: platform=%s user_id=%s",
+            params.platform,
+            params.user_id,
+        )
+        raise
+
+    if not row:
+        return UserQueryResult(found=False, user=None)
+
+    # aiomysql 默认 cursor 返回 tuple，按 col_names 顺序组回 dict
+    raw = dict(zip(col_names, row, strict=True))
+    # JSON 列（meta）从 DB 拿回来可能是 str（未解析），要反序列化
+    meta_raw = raw.get("meta")
+    if isinstance(meta_raw, str):
+        try:
+            raw["meta"] = json.loads(meta_raw)
+        except json.JSONDecodeError:
+            ctx.logger.warning("user.query: meta not valid JSON, using empty dict")
+            raw["meta"] = {}
+    return UserQueryResult(found=True, user=UserRecord.model_validate(raw))

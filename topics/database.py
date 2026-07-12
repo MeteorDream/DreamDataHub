@@ -18,6 +18,13 @@ class DatabaseWritePayload(BaseModel):
     row: dict[str, Any] = Field(
         default_factory=dict, description="行数据 dict，按 Pydantic model 校验"
     )
+    upsert: bool = Field(
+        default=False,
+        description=(
+            "True 时生成 INSERT ... ON DUPLICATE KEY UPDATE —— 依赖表上有 "
+            "UNIQUE KEY 约束；冲突时非主键、非 created_at 列被覆盖为新值。"
+        ),
+    )
 
 
 class DatabaseWrite(Topic):

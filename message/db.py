@@ -35,6 +35,8 @@ class DBRecord(BaseModel):
     # ClassVar 不会被 Pydantic 视作字段
     __table__: ClassVar[str]
     __primary_key__: ClassVar[str] = "id"
+    # 联合唯一索引：每个元素是一组列名。生成 `UNIQUE KEY uk_<cols> (<cols>)`。
+    __unique_keys__: ClassVar[list[tuple[str, ...]]] = []
 
 
 class LLMExchangeRecord(DBRecord):
@@ -88,10 +90,30 @@ class BotMessageRecord(DBRecord):
         return cls(**event.model_dump(mode="python"))
 
 
+class UserRecord(DBRecord):
+    """一个 IM 平台账号 —— (platform, user_id) 联合唯一标识一个用户。
+
+    ``user_name`` 存最近观察到的平台原始名；``meta`` 存平台特有的杂项
+    （如 QQ 群角色、TG is_bot、weibo verified/followers_count 等），schema 自由。
+    """
+
+    __table__ = "user"
+    __unique_keys__ = [("platform", "user_id")]
+
+    id: int | None = None  # AUTO_INCREMENT
+    platform: Annotated[str, "VARCHAR(32)"] = ""
+    user_id: Annotated[str, "VARCHAR(64)"] = ""
+    user_name: Annotated[str, "VARCHAR(128)"] = ""
+    meta: dict[str, Any] = Field(default_factory=dict)  # JSON 列
+    created_at: datetime | None = None  # DEFAULT CURRENT_TIMESTAMP
+    updated_at: datetime | None = None  # DEFAULT CURRENT_TIMESTAMP ON UPDATE ...
+
+
 # mysql 模块按 config.enabled_tables 过滤后从这里取
 TABLES: dict[str, type[DBRecord]] = {
     LLMExchangeRecord.__table__: LLMExchangeRecord,
     BotMessageRecord.__table__: BotMessageRecord,
+    UserRecord.__table__: UserRecord,
 }
 
 
@@ -166,9 +188,13 @@ def _column_sql(name: str, annotation: Any, metadata: list[Any], is_pk: bool) ->
         else:
             parts.append("NOT NULL")
 
-    # datetime 默认值
+    # datetime 默认值：
+    # - 所有非主键 datetime 列都 DEFAULT CURRENT_TIMESTAMP
+    # - 列名为 "updated_at" 的自动加 ON UPDATE CURRENT_TIMESTAMP（约定优于配置）
     if sql_type.upper() == "DATETIME" and not is_pk:
         parts.append("DEFAULT CURRENT_TIMESTAMP")
+        if name == "updated_at":
+            parts.append("ON UPDATE CURRENT_TIMESTAMP")
 
     return " ".join(parts)
 
@@ -184,11 +210,23 @@ def model_columns(model: type[DBRecord]) -> list[str]:
 
 
 def build_create_ddl(model: type[DBRecord]) -> str:
-    """反射 ``DBRecord`` 子类 → ``CREATE TABLE IF NOT EXISTS`` DDL。"""
+    """反射 ``DBRecord`` 子类 → ``CREATE TABLE IF NOT EXISTS`` DDL。
+
+    支持 ``__unique_keys__`` 声明联合唯一索引；索引名格式 ``uk_<col1>_<col2>_...``。
+    """
     pk = model.__primary_key__
     cols: list[str] = []
     for name, field in model.model_fields.items():
         cols.append(_column_sql(name, field.annotation, list(field.metadata), is_pk=name == pk))
+
+    # 联合唯一索引
+    for cols_tuple in model.__unique_keys__:
+        if not cols_tuple:
+            continue
+        idx_name = "uk_" + "_".join(cols_tuple)
+        col_list = ", ".join(f"`{c}`" for c in cols_tuple)
+        cols.append(f"UNIQUE KEY `{idx_name}` ({col_list})")
+
     cols_sql = ",\n  ".join(cols)
     return (
         f"CREATE TABLE IF NOT EXISTS `{model.__table__}` (\n"
@@ -207,7 +245,12 @@ def _coerce_for_sql(value: Any) -> Any:
     return value
 
 
-def build_insert(model: type[DBRecord], row: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
+def build_insert(
+    model: type[DBRecord],
+    row: dict[str, Any],
+    *,
+    upsert: bool = False,
+) -> tuple[str, tuple[Any, ...]]:
     """row → ``(sql, params)``。
 
     流程：
@@ -216,6 +259,12 @@ def build_insert(model: type[DBRecord], row: dict[str, Any]) -> tuple[str, tuple
     3. 跳过 ``None`` 让数据库走默认值（AUTO_INCREMENT / CURRENT_TIMESTAMP）
     4. list/dict 类型的值用 ``json.dumps`` 序列化（对应 JSON 列）
     5. 拼参数化 SQL，使用 ``%s`` 占位（aiomysql / PyMySQL 标准）
+
+    参数:
+        upsert: 为 ``True`` 时生成 ``INSERT ... ON DUPLICATE KEY UPDATE``——
+                依赖表上有 UNIQUE KEY（``__unique_keys__``）或主键冲突；
+                所有非主键、非 ``created_at`` 的列都会在冲突时被更新为新值。
+                ``updated_at`` 列有 ``ON UPDATE CURRENT_TIMESTAMP``，会自动刷新。
     """
     record = model(**row)
     dumped = record.model_dump()
@@ -226,14 +275,28 @@ def build_insert(model: type[DBRecord], row: dict[str, Any]) -> tuple[str, tuple
         value = dumped.get(name)
         if value is None:
             continue
-        cols.append(f"`{name}`")
+        cols.append(name)
         params.append(_coerce_for_sql(value))
 
     if not cols:
         raise ValueError(f"build_insert: row produced no non-null columns for {model.__table__}")
 
+    quoted_cols = [f"`{c}`" for c in cols]
     placeholders = ", ".join(["%s"] * len(cols))
-    sql = f"INSERT INTO `{model.__table__}` ({', '.join(cols)}) VALUES ({placeholders})"
+    sql = (
+        f"INSERT INTO `{model.__table__}` ({', '.join(quoted_cols)}) "
+        f"VALUES ({placeholders})"
+    )
+
+    if upsert:
+        # UPDATE 部分：跳过主键 + created_at（不应被覆盖）
+        pk = model.__primary_key__
+        update_cols = [c for c in cols if c not in (pk, "created_at")]
+        if update_cols:
+            update_clause = ", ".join(f"`{c}` = VALUES(`{c}`)" for c in update_cols)
+            sql += f" ON DUPLICATE KEY UPDATE {update_clause}"
+        # else: 只有 pk / created_at 列时不生成 ON DUPLICATE，退化为纯 INSERT
+
     return sql, tuple(params)
 
 
@@ -242,6 +305,7 @@ __all__ = [
     "BotMessageRecord",
     "DBRecord",
     "LLMExchangeRecord",
+    "UserRecord",
     "build_create_ddl",
     "build_insert",
     "model_columns",

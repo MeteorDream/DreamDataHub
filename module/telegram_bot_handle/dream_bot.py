@@ -30,18 +30,23 @@ from telegram.ext import (
 
 from hub import Context
 from message.bot import BotEvent, TextSegment
-from message.db import BotMessageRecord
+from message.db import BotMessageRecord, UserRecord
+from module.mysql import UserQueryParams, UserQueryService
 from module.weather import (
     WeatherForecastParams,
     WeatherForecastService,
     WeatherLocationParams,
     WeatherLocationService,
 )
+from services.weather.base import LocationData
 from services.weather.formatter import build_weather_message
 from topics.database import DatabaseWrite, DatabaseWritePayload
 from topics.telegram import TelegramMessage
 
 from .base_bot import BaseTelegramHandle
+
+# 平台名常量 —— (platform, user_id) 联合唯一标识 user 表的一行
+_PLATFORM = "telegram"
 
 
 class DreamBotHandle(BaseTelegramHandle):
@@ -237,6 +242,9 @@ class DreamBotHandle(BaseTelegramHandle):
             else ""
         )
         user = update.effective_user
+        if not user:
+            self.ctx.logger.info("telegram_bot: location_message no user, skip")
+            return
         location = msg.location
         self.ctx.logger.info(
             "[Telegram] User: %s chat: %s(%s) location message: %s",
@@ -245,7 +253,9 @@ class DreamBotHandle(BaseTelegramHandle):
             thread_id,
             (location.latitude, location.longitude),
         )
-        context.user_data["location"] = (location.latitude, location.longitude)
+        if not update.message:
+            self.ctx.logger.info("telegram_bot: location_message no message, skip")
+            return
         await update.message.reply_text(
             f"Update Location success, Latitude: {location.latitude}, Longitude: {location.longitude}"
         )
@@ -259,26 +269,80 @@ class DreamBotHandle(BaseTelegramHandle):
         except RuntimeError as exc:
             await update.message.reply_text(f"Get address from location failed: {exc}")
             return
-        context.user_data["location_info"] = location_info
         address = location_info.formatted_address or "未知"
         await update.message.reply_text(
             f"Get address from location success, Address: {address}"
         )
 
+        # 落库：user 表按 (platform, user_id) upsert，location 信息落到 meta 字段
+        meta = {
+            "location": {
+                "latitude": location.latitude,
+                "longitude": location.longitude,
+            },
+            # 存精简的 LocationData（不含 raw，避免 meta 过大）
+            "location_info": location_info.model_dump(exclude={"raw"}),
+        }
+        await self.ctx.publish(
+            DatabaseWrite,
+            DatabaseWritePayload(
+                table=UserRecord.__table__,
+                row={
+                    "platform": _PLATFORM,
+                    "user_id": str(user.id),
+                    "user_name": user.full_name or "",
+                    "meta": meta,
+                },
+                upsert=True,
+            ),
+        )
+
+    async def _load_user_location(
+        self, user_id: str
+    ) -> tuple[tuple[float, float] | None, LocationData | None]:
+        """从 user 表读取用户上次分享的 location + 逆地理编码。
+
+        返回 ``(coords, location_info)``——都可能为 None（用户未曾分享 / 数据缺失）。
+        除了 DB 是数据源之外，其他调用侧逻辑不变。
+        """
+        result = await self.ctx.invoke(
+            UserQueryService,
+            UserQueryParams(platform=_PLATFORM, user_id=user_id),
+        )
+        if not result.found or result.user is None:
+            return None, None
+        meta = result.user.meta or {}
+        loc = meta.get("location") or {}
+        coords: tuple[float, float] | None = None
+        if "latitude" in loc and "longitude" in loc:
+            coords = (float(loc["latitude"]), float(loc["longitude"]))
+        info_dict = meta.get("location_info")
+        location_info = LocationData.model_validate(info_dict) if info_dict else None
+        return coords, location_info
+
     async def get_location(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
             self.ctx.logger.info("telegram_bot: get location don't have message, skip")
             return
-        location = context.user_data.get("location")
-        if not location:
+        user = update.effective_user
+        if user is None:
+            await update.message.reply_text("Cannot identify user.")
+            return
+        try:
+            coords, location_info = await self._load_user_location(str(user.id))
+        except Exception as exc:
+            # 网络断 / DB 异常 / Pydantic 校验失败等都在这里兜底，避免 traceback 冒到用户
+            self.ctx.logger.exception("get_location: load user location failed")
+            await update.message.reply_text(f"Get location failed: {exc}")
+            return
+        if coords is None:
             await update.message.reply_text(
                 "You have not shared your location yet. Please share your location with me!"
             )
             return
-        address = context.user_data.get("location_info")
-        address_str = address.formatted_address if address else "未知"
+        address_str = location_info.formatted_address if location_info else "未知"
         await update.message.reply_text(
-            f"Your current location as Latitude: {location[0]}, Longitude: {location[1]}, Address: {address_str}"
+            f"Your current location as Latitude: {coords[0]}, Longitude: {coords[1]}, Address: {address_str}"
         )
 
     async def get_weather(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -286,7 +350,17 @@ class DreamBotHandle(BaseTelegramHandle):
             self.ctx.logger.info("telegram_bot: get weather don't have message, skip")
             return
 
-        location_info = context.user_data.get("location_info")
+        user = update.effective_user
+        if user is None:
+            await update.message.reply_text("Cannot identify user.")
+            return
+        try:
+            _coords, location_info = await self._load_user_location(str(user.id))
+        except Exception as exc:
+            # 网络断 / DB 异常 / Pydantic 校验失败等都在这里兜底，避免 traceback 冒到用户
+            self.ctx.logger.exception("get_weather: load user location failed")
+            await update.message.reply_text(f"Get weather failed: {exc}")
+            return
 
         if not location_info:
             await update.message.reply_text(
