@@ -42,22 +42,25 @@ class DBRecord(BaseModel):
 class BotMessageRecord(DBRecord):
     """一条入站/出站的 IM 消息——对应 ``message.bot.BotEvent``。
 
-    字段命名与 ``BotEvent`` 完全一致，``message`` 列存为 JSON
-    （``list[BotSegment]`` 序列化后的数组）。``id`` / ``time`` / ``type``
-    是 MySQL 保留字——SQL 里用反引号围起来即可避免冲突；为了避免与
-    AUTO_INCREMENT 自增主键冲突，本表用 ``message_id`` 作为主键。
+    字段命名与 ``BotEvent`` 大部分一致，``message`` 列存为 JSON
+    （``list[BotSegment]`` 序列化后的数组）。``time`` / ``type`` 是 MySQL
+    保留字——SQL 里用反引号围起来即可避免冲突。
+
+    **主键设计**：``id`` 是 DB 自增主键（跟其他表约定一致）。``BotEvent.id``
+    是"事件唯一标识"（协议字段），跟 DB 主键概念不同；在 IM 模块的现有实现里，
+    ``BotEvent.id`` 只是 ``message_id`` 的复制品，没有独立信息量——``from_event``
+    工具会**丢弃 event.id**，让 DB 自增填充。想追溯平台原始消息 ID 走 ``message_id``
+    列即可。
 
     业务侧 publish 这条记录时直接传 ``BotEvent.model_dump()``——见
     ``BotMessageRecord.from_event`` 工具。
     """
 
     __table__ = "bot_message"
-    __primary_key__ = "row_id"
 
-    row_id: int | None = None  # 自增主键，避免与 BotEvent.id 冲突
-    id: Annotated[str, "VARCHAR(64)"] = ""  # BotEvent 的 id（事件唯一标识符）
+    id: int | None = None  # DB 自增主键（BotEvent.id 会在 from_event 里被丢弃）
     platform: Annotated[str, "VARCHAR(32)"] = ""
-    time: float = 0.0  # Unix 时间戳，秒；保留 float 精度
+    time: float = 0.0  # Unix 时间戳,秒；保留 float 精度
     type: Annotated[str, "VARCHAR(16)"] = ""
     detail_type: Annotated[str, "VARCHAR(32)"] = ""
     sub_type: Annotated[str, "VARCHAR(32)"] = ""
@@ -68,13 +71,23 @@ class BotMessageRecord(DBRecord):
     user_name: Annotated[str, "VARCHAR(128)"] = ""
     session_id: Annotated[str, "VARCHAR(128)"] = ""
     session_name: Annotated[str, "VARCHAR(128)"] = ""
+    # 当前消息引用（quote）的另一条消息 ID —— 跨消息追溯用。None 表示无引用。
+    quote_id: Annotated[str, "VARCHAR(64)"] | None = None
+    # 补充载荷（schema 自由）—— 平台特有或后续可能补的字段。None 表示无补充。
+    addition: dict[str, Any] | None = None
     created_at: datetime | None = None  # DEFAULT CURRENT_TIMESTAMP — 落库时间
 
     @classmethod
     def from_event(cls, event: BotEvent) -> BotMessageRecord:
-        """把 ``BotEvent`` 转成可写入的 record；message 段用 model_dump 落成
-        ``list[dict]``，方便后续 JSON 序列化。"""
-        return cls(**event.model_dump(mode="python"))
+        """把 ``BotEvent`` 转成可写入的 record。
+
+        - ``message`` 段用 ``model_dump`` 落成 ``list[dict]``，方便后续 JSON 序列化
+        - **丢弃 ``event.id``**：DB 主键 ``id`` 由 AUTO_INCREMENT 生成，不受协议 id
+          干扰。平台原始 message ID 在 ``message_id`` 列里保留
+        """
+        data = event.model_dump(mode="python")
+        data.pop("id", None)  # 让 DB 主键 id 走自增，不被 BotEvent.id 覆盖
+        return cls(**data)
 
 
 class UserRecord(DBRecord):

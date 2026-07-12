@@ -56,6 +56,7 @@ class DreamBotHandle(BaseTelegramHandle):
     1.
     """
 
+    DEVELOPER_USER_ID = 7730322591
     DEVELOPER_CHAT_ID = -1003847258572
     DEVELOPER_MESSAGE_THREAD_ID = 7
 
@@ -149,6 +150,10 @@ class DreamBotHandle(BaseTelegramHandle):
             else ""
         )
         user = update.effective_user
+        # 引用消息 ID —— Telegram 的 reply_to_message 对应我们的 quote_id
+        quote_id = (
+            str(msg.reply_to_message.message_id) if msg.reply_to_message else None
+        )
         event = BotEvent(
             id=str(msg.message_id),
             platform="telegram",
@@ -163,6 +168,7 @@ class DreamBotHandle(BaseTelegramHandle):
             user_name=(user.full_name if user else "") or "",
             session_id=f"tg:{chat_id}",
             session_name=str(update.effective_chat.title) if update.effective_chat else "",
+            quote_id=quote_id,
         )
         await self.ctx.publish(TelegramMessage, event)
         await self.ctx.publish(
@@ -179,6 +185,9 @@ class DreamBotHandle(BaseTelegramHandle):
             thread_id,
             msg.text,
         )
+
+        if not user or user.id != self.DEVELOPER_USER_ID:
+            return
 
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Log the error and send a telegram message to notify the developer."""

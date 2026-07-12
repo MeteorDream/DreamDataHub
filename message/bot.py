@@ -271,5 +271,12 @@ class BotEvent(BaseModel):
     session_id: str
     session_name: str
 
+    # 引用的其他消息 id（可选）—— 当前消息 quote 了哪条消息；不在 OneBot 标准
+    # 协议里，属于 hub 内部的扩展字段，用于跨消息追溯。None 表示无引用。
+    quote_id: str | None = None
+    # 补充载荷（可选）—— schema 自由的 JSON dict，存平台特有或后续可能补的信息。
+    # None 表示无补充；不该塞进 message 段的信息就放这里。
+    addition: dict[str, Any] | None = None
+
 
 BotEvent.model_rebuild()

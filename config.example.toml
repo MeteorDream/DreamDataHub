@@ -38,6 +38,16 @@ bot_name = "bot"
 whitelist_groups = []
 whitelist_users = []
 
+# --- IM：QQ (napcat 骨架，仅生命周期) ---------------------------------------
+[module.napcat_bot]
+enabled = false
+ws_url = "ws://127.0.0.1:3001"
+access_token = ""
+bot_id = 0
+bot_name = "bot"
+whitelist_groups = []
+whitelist_users = []
+
 # --- IM：Telegram -----------------------------------------------------------
 [module.telegram_bot]
 enabled = false

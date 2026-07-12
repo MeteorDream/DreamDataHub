@@ -247,13 +247,12 @@ def test_insert_default_no_upsert_clause() -> None:
 
 
 def test_bot_message_ddl_uses_backtick_for_reserved_words() -> None:
-    """BotEvent 有 id/time/type 三个 SQL 保留字字段，DDL 必须用反引号围起来。"""
+    """BotEvent 有 time/type 两个 SQL 保留字字段，DDL 必须用反引号围起来。"""
     ddl = build_create_ddl(BotMessageRecord)
     assert "CREATE TABLE IF NOT EXISTS `bot_message`" in ddl
-    # row_id 是自增主键
-    assert "`row_id` BIGINT AUTO_INCREMENT PRIMARY KEY" in ddl
+    # id 是 DB 自增主键（跟其他表约定一致；不再用 row_id）
+    assert "`id` BIGINT AUTO_INCREMENT PRIMARY KEY" in ddl
     # 保留字字段都被反引号围
-    assert "`id` VARCHAR(64) NOT NULL" in ddl
     assert "`time` DOUBLE NOT NULL" in ddl
     assert "`type` VARCHAR(16) NOT NULL" in ddl
     # message 列是 JSON
@@ -264,8 +263,10 @@ def test_bot_message_ddl_uses_backtick_for_reserved_words() -> None:
 
 
 def test_bot_message_from_event_round_trip() -> None:
-    """BotEvent → BotMessageRecord.from_event → build_insert 链路顺畅，
-    message 列被 json.dumps 序列化成字符串。"""
+    """BotEvent → BotMessageRecord.from_event → build_insert 链路顺畅：
+    - event.id 被 from_event 丢弃，DB 主键 id 走自增
+    - message 列被 json.dumps 序列化成字符串
+    """
     evt = BotEvent(
         id="evt-1",
         platform="qq",
@@ -282,19 +283,22 @@ def test_bot_message_from_event_round_trip() -> None:
         session_name="の、梦蝶",
     )
     record = BotMessageRecord.from_event(evt)
-    assert record.id == "evt-1"
+    # event.id 被丢弃，record.id 是 None（等 DB 自增）
+    assert record.id is None
+    # 平台原始 message id 在 message_id 列
+    assert record.message_id == "12345"
     assert record.platform == "qq"
     assert len(record.message) == 2
 
     sql, params = build_insert(BotMessageRecord, record.model_dump())
-    # row_id / created_at 是 None → 不入 SQL
-    assert "`row_id`" not in sql
+    # id / created_at 是 None → 不入 SQL（走 DB 默认 / 自增）
+    assert "`id`" not in sql
     assert "`created_at`" not in sql
-    # 13 个非 None 列
-    assert sql.count("%s") == 13
-    assert len(params) == 13
+    # 12 个非 None 列（原 13 - 旧的 event.id VARCHAR 列）
+    assert sql.count("%s") == 12
+    assert len(params) == 12
     # message 列被序列化成 JSON 字符串
-    message_param = params[7]  # message 在第 8 个位置（按声明顺序）
+    message_param = params[6]  # platform=0, time=1, type=2, detail_type=3, sub_type=4, message_id=5, message=6
     assert isinstance(message_param, str)
     assert '"Text"' in message_param
     assert '"hello"' in message_param
@@ -319,7 +323,7 @@ def test_bot_message_json_serialization_handles_strenum() -> None:
         session_name="",
     )
     sql, params = build_insert(BotMessageRecord, BotMessageRecord.from_event(evt).model_dump())
-    msg_json = params[7]
+    msg_json = params[6]  # message 列在索引 6（见 test_bot_message_from_event_round_trip）
     # JSON 里 type 应该是字符串 "Text"，不是 StrEnum repr
     assert '"type": "Text"' in msg_json or '"type":"Text"' in msg_json
 
