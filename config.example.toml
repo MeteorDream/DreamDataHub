@@ -25,7 +25,7 @@ password = ""
 database = "datahub"
 pool_size = 5
 # 留空表示 message/db.py 里 TABLES 注册的全部启用
-# 目前注册的：bot_message / llm_exchange / user
+# 目前注册的：bot_message / user
 enabled_tables = ["bot_message", "user"]
 
 # --- IM：QQ (OneBot v11 / napcat) -------------------------------------------

@@ -17,7 +17,6 @@ from message.bot import AtSegment, BotEvent, TextSegment
 from message.db import (
     BotMessageRecord,
     DBRecord,
-    LLMExchangeRecord,
     UserRecord,
     build_create_ddl,
     build_insert,
@@ -28,20 +27,6 @@ from topics.database import DatabaseWritePayload
 # ---------------------------------------------------------------------------
 # DDL 反射
 # ---------------------------------------------------------------------------
-
-
-def test_create_ddl_for_llm_exchange() -> None:
-    ddl = build_create_ddl(LLMExchangeRecord)
-    # 表名、字段名、SQL 类型、默认值都在
-    assert "CREATE TABLE IF NOT EXISTS `llm_exchange`" in ddl
-    assert "`id` BIGINT AUTO_INCREMENT PRIMARY KEY" in ddl
-    assert "`session_id` VARCHAR(128) NOT NULL" in ddl
-    assert "`prompt` TEXT NOT NULL" in ddl
-    assert "`response` TEXT NOT NULL" in ddl
-    assert "`model` VARCHAR(64) NOT NULL" in ddl
-    assert "`platform` VARCHAR(32) NOT NULL" in ddl
-    assert "`created_at` DATETIME NULL DEFAULT CURRENT_TIMESTAMP" in ddl
-    assert "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4" in ddl
 
 
 def test_create_ddl_optional_field_uses_null() -> None:
@@ -121,41 +106,41 @@ def test_create_ddl_unique_keys_multiple() -> None:
 
 def test_insert_uses_placeholder_and_skips_none() -> None:
     sql, params = build_insert(
-        LLMExchangeRecord,
+        UserRecord,
         {
-            "session_id": "qq:group:123",
-            "prompt": "hi",
-            "response": "hello",
-            "model": "gpt-4o",
             "platform": "qq",
+            "user_id": "12345",
+            "user_name": "Alice",
         },
     )
-    # id / created_at 都是 None → 跳过让 DB 走默认
+    # id / created_at / updated_at 都是 None → 跳过让 DB 走默认
     assert "`id`" not in sql
     assert "`created_at`" not in sql
-    # 5 个非 None 列，5 个 %s
-    assert sql.count("%s") == 5
-    assert len(params) == 5
-    assert params == ("qq:group:123", "hi", "hello", "gpt-4o", "qq")
+    assert "`updated_at`" not in sql
+    # 3 显式列 + 1 个默认 {} 的 meta = 4 个 %s
+    assert sql.count("%s") == 4
+    assert len(params) == 4
+    # 前 3 个是我们传的字符串；最后一个是 meta 默认 {} 序列化
+    assert params[:3] == ("qq", "12345", "Alice")
+    assert params[3] == "{}"
 
 
 def test_insert_drops_unknown_payload_keys() -> None:
     """payload 里多余的键被 Pydantic extra='ignore' 丢掉，不会进 SQL。"""
     sql, params = build_insert(
-        LLMExchangeRecord,
+        UserRecord,
         {
-            "session_id": "x",
-            "prompt": "y",
-            "response": "z",
-            "model": "m",
-            "platform": "p",
+            "platform": "qq",
+            "user_id": "1",
+            "user_name": "X",
             "drop_table": "DROP TABLE users;--",  # 注入企图被 model 丢掉
             "another_extra": 42,
         },
     )
     assert "drop_table" not in sql
     assert "another_extra" not in sql
-    assert params == ("x", "y", "z", "m", "p")
+    # 3 显式列 + 1 个默认 meta = 4 params
+    assert params[:3] == ("qq", "1", "X")
 
 
 def test_insert_with_only_none_columns_raises() -> None:
@@ -175,13 +160,11 @@ def test_insert_validation_error_propagates() -> None:
 
     with pytest.raises(ValidationError):
         build_insert(
-            LLMExchangeRecord,
+            UserRecord,
             {
-                "session_id": "x",
-                "prompt": ["not", "a", "string"],  # type: ignore[dict-item]
-                "response": "z",
-                "model": "m",
-                "platform": "p",
+                "platform": "qq",
+                "user_id": "1",
+                "user_name": ["not", "a", "string"],  # type: ignore[dict-item]
             },
         )
 
@@ -275,8 +258,9 @@ def test_bot_message_ddl_uses_backtick_for_reserved_words() -> None:
     assert "`type` VARCHAR(16) NOT NULL" in ddl
     # message 列是 JSON
     assert "`message` JSON NOT NULL" in ddl
-    # 故意不再有 created_at 字段
-    assert "`created_at`" not in ddl
+    # created_at 走 CURRENT_TIMESTAMP 默认值（落库时间，跟 BotEvent.time 不同——
+    # 后者是 IM 平台原始事件时间戳）
+    assert "`created_at` DATETIME NULL DEFAULT CURRENT_TIMESTAMP" in ddl
 
 
 def test_bot_message_from_event_round_trip() -> None:
@@ -347,7 +331,7 @@ def test_bot_message_json_serialization_handles_strenum() -> None:
 
 def _make_ctx(pool=None, tables=None) -> SimpleNamespace:
     state = SimpleNamespace(
-        tables=tables if tables is not None else {"llm_exchange": LLMExchangeRecord},
+        tables=tables if tables is not None else {"user": UserRecord},
         pool=pool,
         dsn={"host": "fake", "db": "fake"},
         pool_size=1,
@@ -376,8 +360,8 @@ def test_on_write_handles_business_edge_cases() -> None:
         mysql_mod.on_write(
             ctx,
             DatabaseWritePayload(
-                table="llm_exchange",
-                row={"prompt": "x", "response": "y", "model": "m", "platform": "p"},
+                table="user",
+                row={"platform": "qq", "user_id": "1", "user_name": "X"},
             ),
         )
     )
@@ -402,22 +386,22 @@ def test_on_write_with_fake_pool_executes_insert() -> None:
 
     ctx = _make_ctx(pool=pool)
     payload = DatabaseWritePayload(
-        table="llm_exchange",
+        table="user",
         row={
-            "session_id": "qq:group:1",
-            "prompt": "hi",
-            "response": "hello",
-            "model": "gpt-4o",
             "platform": "qq",
+            "user_id": "12345",
+            "user_name": "Alice",
         },
     )
     asyncio.run(mysql_mod.on_write(ctx, payload))
 
     cursor.execute.assert_awaited_once()
     sql, params = cursor.execute.call_args.args
-    assert "INSERT INTO `llm_exchange`" in sql
-    assert sql.count("%s") == 5
-    assert params == ("qq:group:1", "hi", "hello", "gpt-4o", "qq")
+    assert "INSERT INTO `user`" in sql
+    # 3 显式列 + 1 个默认 meta = 4 个 %s
+    assert sql.count("%s") == 4
+    assert params[:3] == ("qq", "12345", "Alice")
+    assert params[3] == "{}"
 
 
 def test_on_write_with_upsert_dispatches_correct_sql() -> None:
@@ -521,7 +505,8 @@ def test_user_query_returns_not_found_when_row_missing() -> None:
 
 def test_user_query_raises_when_user_table_not_enabled() -> None:
     """UserQueryService: user 表未启用时抛 RuntimeError（配置错误）。"""
-    ctx = _make_ctx(pool=MagicMock(), tables={"llm_exchange": LLMExchangeRecord})
+    # tables 里没有 "user"，只有 bot_message
+    ctx = _make_ctx(pool=MagicMock(), tables={"bot_message": BotMessageRecord})
     params = mysql_mod.UserQueryParams(platform="telegram", user_id="999")
     with pytest.raises(RuntimeError, match="not enabled"):
         asyncio.run(mysql_mod.query_user(ctx, params))

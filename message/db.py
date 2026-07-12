@@ -39,20 +39,6 @@ class DBRecord(BaseModel):
     __unique_keys__: ClassVar[list[tuple[str, ...]]] = []
 
 
-class LLMExchangeRecord(DBRecord):
-    """一次 LLM 一来一回的记录。"""
-
-    __table__ = "llm_exchange"
-
-    id: int | None = None  # AUTO_INCREMENT，写入时通常不传
-    session_id: Annotated[str, "VARCHAR(128)"] = ""
-    prompt: Annotated[str, "TEXT"] = ""
-    response: Annotated[str, "TEXT"] = ""
-    model: Annotated[str, "VARCHAR(64)"] = ""
-    platform: Annotated[str, "VARCHAR(32)"] = ""
-    created_at: datetime | None = None  # 默认 CURRENT_TIMESTAMP
-
-
 class BotMessageRecord(DBRecord):
     """一条入站/出站的 IM 消息——对应 ``message.bot.BotEvent``。
 
@@ -82,6 +68,7 @@ class BotMessageRecord(DBRecord):
     user_name: Annotated[str, "VARCHAR(128)"] = ""
     session_id: Annotated[str, "VARCHAR(128)"] = ""
     session_name: Annotated[str, "VARCHAR(128)"] = ""
+    created_at: datetime | None = None  # DEFAULT CURRENT_TIMESTAMP — 落库时间
 
     @classmethod
     def from_event(cls, event: BotEvent) -> BotMessageRecord:
@@ -111,7 +98,6 @@ class UserRecord(DBRecord):
 
 # mysql 模块按 config.enabled_tables 过滤后从这里取
 TABLES: dict[str, type[DBRecord]] = {
-    LLMExchangeRecord.__table__: LLMExchangeRecord,
     BotMessageRecord.__table__: BotMessageRecord,
     UserRecord.__table__: UserRecord,
 }
@@ -304,7 +290,6 @@ __all__ = [
     "TABLES",
     "BotMessageRecord",
     "DBRecord",
-    "LLMExchangeRecord",
     "UserRecord",
     "build_create_ddl",
     "build_insert",
