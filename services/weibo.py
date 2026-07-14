@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any, ClassVar, Literal
@@ -228,6 +229,30 @@ _SESSION_EXPIRED_KEYWORDS: tuple[str, ...] = (
 )
 
 _REQUIRED_AUTH_COOKIES: frozenset[str] = frozenset({"SUB", "SUBP"})
+
+
+# ``parse_detail_url`` 用 —— 匹配 weibo.com / m.weibo.cn 两种域名 + 短(mblogid)/长(mid) ID。
+# 例：
+#   https://weibo.com/1871802012/5320613611703506
+#   https://weibo.com/status/Qw06Kd98p
+#   https://m.weibo.cn/status/Qw06Kd98p
+#   https://m.weibo.cn/detail/5320613611703506
+_URL_PATTERN: re.Pattern[str] = re.compile(
+    r"https?://(?:www\.)?(?:weibo\.com|m\.weibo\.cn)"
+    r"(?:/(?:status|detail))?"
+    r"/(?:[0-9]+/)?([A-Za-z0-9]+)"
+)
+
+# ``extract_detail_photos`` 用 —— pic_infos 里各尺寸 slot 的取值优先级。
+# ``original`` 是微博自己标注的"原图"，优先级最高；``largest`` 通常与 original
+# 同尺寸（有时是等比压缩版），后面的越走越退化。
+_PHOTO_SIZE_PRIORITY: tuple[str, ...] = (
+    "original",
+    "largest",
+    "large",
+    "mw2000",
+    "bmiddle",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -596,6 +621,82 @@ class Weibo:
             params={"uid": str(uid), "page": str(page), "feature": str(feature)},
             action=self.USER_WEIBOS_ACTION,
         )
+
+    # ── 详情解析辅助 ────────────────────────────────────────────────────
+    #
+    # 这一组是纯函数（不碰实例 / 不发网络）—— 给调用方从 URL 抽 mblogid、
+    # 从 ``get_weibo_detail`` 结果里抽正文和图片。放在 ``Weibo`` 上方便 IM 侧
+    # 一站式引用，语义上也归属"微博领域知识"而不是某个 bot 的实现细节。
+
+    @staticmethod
+    def parse_detail_url(text: str) -> str | None:
+        """从 weibo URL 中抽出 ``mblogid``；不是 URL 或不匹配就返回 None。
+
+        支持 ``weibo.com`` / ``m.weibo.cn``，短 ID（``Qw06Kd98p``）与长 ID
+        （``5320613611703506``）都可。
+        """
+        match = _URL_PATTERN.search(text.strip())
+        return match.group(1) if match else None
+
+    @staticmethod
+    def format_detail_text(detail: dict[str, Any]) -> str:
+        """把 ``get_weibo_detail`` 结果拼成纯文本：``@作者: 正文``；若是转发，
+        再追加 ``//@原作者: 原文``。文本里的 emoji 占位符（如 ``[泪奔]``）保留原样。
+        """
+        parts: list[str] = []
+        user = detail.get("user") or {}
+        screen_name = user.get("screen_name") or ""
+        raw = (detail.get("text_raw") or "").strip()
+        if screen_name and raw:
+            parts.append(f"@{screen_name}: {raw}")
+        elif raw:
+            parts.append(raw)
+
+        retweet = detail.get("retweeted_status") or {}
+        if isinstance(retweet, dict) and retweet:
+            rt_user = retweet.get("user") or {}
+            rt_name = rt_user.get("screen_name") or ""
+            rt_raw = (retweet.get("text_raw") or "").strip()
+            if rt_raw:
+                prefix = f"//@{rt_name}: " if rt_name else "//"
+                parts.append(prefix + rt_raw)
+
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def extract_detail_photos(
+        detail: dict[str, Any], *, limit: int | None = None
+    ) -> list[str]:
+        """按 ``pic_ids`` 顺序抽图片 URL；同时看 ``retweeted_status``。
+
+        对每张图，从 ``pic_infos[<pic_id>]`` 里按 :data:`_PHOTO_SIZE_PRIORITY`
+        依次找可用尺寸（``original`` → ``largest`` → ``large`` → ``mw2000`` →
+        ``bmiddle``），拿第一个非空的 URL。
+
+        视频 / 投票 / 卡片等富媒体全部忽略（这些字段落在 ``page_info`` /
+        ``mix_media_info`` 里，函数完全不看）。
+        """
+        urls: list[str] = []
+        for source in (detail, detail.get("retweeted_status") or {}):
+            if not isinstance(source, dict):
+                continue
+            pic_ids = source.get("pic_ids") or []
+            pic_infos = source.get("pic_infos") or {}
+            if not isinstance(pic_ids, list) or not isinstance(pic_infos, dict):
+                continue
+            for pid in pic_ids:
+                info = pic_infos.get(pid) or {}
+                url = ""
+                for key in _PHOTO_SIZE_PRIORITY:
+                    slot = info.get(key) or {}
+                    if isinstance(slot, dict) and slot.get("url"):
+                        url = slot["url"]
+                        break
+                if url:
+                    urls.append(url)
+                if limit is not None and len(urls) >= limit:
+                    return urls
+        return urls
 
     # ── 扫码登录 ────────────────────────────────────────────────────────
     #

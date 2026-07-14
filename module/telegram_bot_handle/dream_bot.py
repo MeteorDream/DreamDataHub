@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import traceback
@@ -16,6 +17,7 @@ from telegram import (
     BotCommandScopeAllGroupChats,
     BotCommandScopeAllPrivateChats,
     BotCommandScopeDefault,
+    InputMediaPhoto,
     ReplyKeyboardRemove,
     Update,
 )
@@ -40,6 +42,12 @@ from module.weather import (
 )
 from services.weather.base import LocationData
 from services.weather.formatter import build_weather_message
+from services.weibo import (
+    Weibo,
+    WeiboApiError,
+    WeiboAuthRequiredError,
+    WeiboSessionExpiredError,
+)
 from topics.database import DatabaseWrite, DatabaseWritePayload
 from topics.telegram import TelegramMessage
 
@@ -47,6 +55,16 @@ from .base_bot import BaseTelegramHandle
 
 # 平台名常量 —— (platform, user_id) 联合唯一标识 user 表的一行
 _PLATFORM = "telegram"
+
+# /weibo login QR 扫码轮询参数
+_WEIBO_QR_POLL_INTERVAL = 2.0
+_WEIBO_QR_TIMEOUT = 180.0  # 秒；passport 二维码大约 3 分钟过期，留一点余量以内的上限
+
+# /weibo hot 输出条目数（对齐 data.jsonl 里的 top5 示例）
+_WEIBO_HOT_TOP_N = 10
+
+# 单条微博最多回复的图片数 —— Telegram media group 硬上限就是 10
+_WEIBO_MAX_PHOTOS = 10
 
 
 class DreamBotHandle(BaseTelegramHandle):
@@ -77,6 +95,7 @@ class DreamBotHandle(BaseTelegramHandle):
         self.app.add_handler(CommandHandler("help", self.help))
         self.app.add_handler(CommandHandler("location", self.get_location))
         self.app.add_handler(CommandHandler("weather", self.get_weather))
+        self.app.add_handler(CommandHandler("weibo", self.weibo_command))
         self.app.add_handler(CommandHandler("cancel", self.cancel))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_message))
         self.app.add_handler(MessageHandler(filters.LOCATION, self.location_message))
@@ -122,6 +141,7 @@ class DreamBotHandle(BaseTelegramHandle):
             BotCommand("help", "Get bot help information"),
             BotCommand("location", "Get your last shared location"),
             BotCommand("weather", "Get weather information based on your last shared location"),
+            BotCommand("weibo", "Weibo commands (e.g. /weibo login to bind account by QR)"),
             BotCommand("cancel", "Cancel the current operation"),
         ]
         for scope_cls in (
@@ -408,3 +428,267 @@ class DreamBotHandle(BaseTelegramHandle):
             forecast, parse_mode="html", address=address
         )
         await update.message.reply_html(weather_message)
+
+    async def weibo_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/weibo <subcommand | url>
+
+        子命令：
+        - ``login``: 申请二维码 → 发给用户扫码 → 轮询扫码状态直至完成或超时 →
+          cookies 落到 user 表的 ``meta.weibo_cookies``
+        - ``hot``: 拉取微博热搜榜（``band_list``）—— 公开接口，不需要登录
+        - ``<weibo url>``: 抓取微博原文 + 图片，视频 / 投票 / 卡片等其他富媒体一律忽略
+        """
+        if not update.message:
+            return
+        args = context.args or []
+        sub = args[0].lower() if args else ""
+        if sub == "login":
+            await self._weibo_login(update, context)
+            return
+        if sub == "hot":
+            await self._weibo_hot(update, context)
+            return
+        if args:
+            mblogid = Weibo.parse_detail_url(args[0])
+            if mblogid:
+                await self._weibo_detail(update, context, mblogid)
+                return
+        await update.message.reply_text(
+            "Usage:\n"
+            "  /weibo login — bind Weibo account to this Telegram user by QR code\n"
+            "  /weibo hot   — show Weibo hot search band\n"
+            "  /weibo <url> — fetch a Weibo post (text + images) by its URL"
+        )
+
+    async def _weibo_login(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        assert update.message is not None
+        user = update.effective_user
+        if user is None:
+            await update.message.reply_text("Cannot identify user.")
+            return
+
+        try:
+            session = await Weibo.qr_login_start()
+        except WeiboApiError as exc:
+            self.ctx.logger.warning("weibo login: qr_login_start failed: %s", exc)
+            await update.message.reply_text(f"Failed to start Weibo QR login: {exc}")
+            return
+        except Exception as exc:
+            self.ctx.logger.exception("weibo login: qr_login_start unexpected error")
+            await update.message.reply_text(f"Failed to start Weibo QR login: {exc}")
+            return
+
+        try:
+            await update.message.reply_photo(
+                photo=session.image_url,
+                caption=(
+                    "Scan the QR code with Weibo app to login.\n"
+                    f"Timeout: {int(_WEIBO_QR_TIMEOUT)}s.\n"
+                    f"Fallback link: {session.scan_url}"
+                ),
+            )
+        except Exception:
+            # 兜底：send_photo 失败（比如二维码 URL 不能被 TG 直接抓取时）
+            self.ctx.logger.exception("weibo login: reply_photo failed, fallback to url")
+            await update.message.reply_text(
+                "Scan the QR code with Weibo app to login "
+                f"(timeout {int(_WEIBO_QR_TIMEOUT)}s):\n{session.image_url}"
+            )
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _WEIBO_QR_TIMEOUT
+        notified_scanned = False
+        cookies: dict[str, str] = {}
+        final_status = "timeout"
+        error_message = ""
+
+        while loop.time() < deadline:
+            try:
+                result = await Weibo.qr_login_check(session)
+            except WeiboApiError as exc:
+                self.ctx.logger.warning("weibo login: qr_login_check failed: %s", exc)
+                error_message = str(exc)
+                final_status = "error"
+                break
+            except Exception as exc:
+                self.ctx.logger.exception("weibo login: qr_login_check unexpected error")
+                error_message = str(exc)
+                final_status = "error"
+                break
+
+            if result.status == "success":
+                cookies = dict(result.cookies)
+                final_status = "success"
+                break
+            if result.status == "expired":
+                final_status = "expired"
+                break
+            if result.status == "scanned" and not notified_scanned:
+                notified_scanned = True
+                try:
+                    await update.message.reply_text(
+                        "QR scanned. Please confirm on your phone."
+                    )
+                except Exception:
+                    self.ctx.logger.exception("weibo login: notify scanned failed")
+
+            await asyncio.sleep(_WEIBO_QR_POLL_INTERVAL)
+
+        if final_status != "success":
+            reason = {
+                "expired": "QR code expired, please try /weibo login again.",
+                "timeout": "Login timed out, please try /weibo login again.",
+                "error": f"Login failed: {error_message}",
+            }.get(final_status, "Login failed.")
+            await update.message.reply_text(reason)
+            return
+
+        # 成功 —— 合并到 user.meta.weibo_cookies，保留 location / location_info 等已有字段
+        existing_meta: dict = {}
+        try:
+            existing = await self.ctx.invoke(
+                UserQueryService,
+                UserQueryParams(platform=_PLATFORM, user_id=str(user.id)),
+            )
+            if existing.found and existing.user is not None:
+                existing_meta = dict(existing.user.meta or {})
+        except Exception:
+            self.ctx.logger.exception("weibo login: read existing user meta failed")
+
+        existing_meta["weibo_cookies"] = cookies
+        await self.ctx.publish(
+            DatabaseWrite,
+            DatabaseWritePayload(
+                table=UserRecord.__table__,
+                row={
+                    "platform": _PLATFORM,
+                    "user_id": str(user.id),
+                    "user_name": user.full_name or "",
+                    "meta": existing_meta,
+                },
+                upsert=True,
+            ),
+        )
+        await update.message.reply_text("Weibo login success, cookies saved.")
+
+    async def _weibo_hot(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        assert update.message is not None
+        # get_hot_band 是公开接口 —— 不需要登录/ cookie；直接匿名调用即可
+        try:
+            async with Weibo() as wb:
+                band = await wb.get_hot_band()
+        except WeiboApiError as exc:
+            self.ctx.logger.warning("weibo hot: get_hot_band failed: %s", exc)
+            await update.message.reply_text(f"Get Weibo hot band failed: {exc}")
+            return
+        except Exception as exc:
+            self.ctx.logger.exception("weibo hot: unexpected error")
+            await update.message.reply_text(f"Get Weibo hot band failed: {exc}")
+            return
+
+        band_list = band.get("band_list") or []
+        if not band_list:
+            await update.message.reply_text("Weibo hot band is empty.")
+            return
+
+        # 格式对齐 data.jsonl 里的 "[hot_band] band_list top5" 示例，只是条数抬到 top-N
+        lines = [f"[hot_band] band_list top{_WEIBO_HOT_TOP_N} of {len(band_list)}:"]
+        for i, item in enumerate(band_list[:_WEIBO_HOT_TOP_N], 1):
+            label = str(item.get("label_name") or "")
+            word = str(item.get("word") or "?")
+            lines.append(f"  {i}. [{label:<3}] {word}")
+        await update.message.reply_text("\n".join(lines))
+
+    async def _load_user_weibo_cookies(self, user_id: str) -> dict[str, str] | None:
+        """从 user 表读取 ``meta.weibo_cookies``。缺失返回 None。"""
+        try:
+            result = await self.ctx.invoke(
+                UserQueryService,
+                UserQueryParams(platform=_PLATFORM, user_id=user_id),
+            )
+        except Exception:
+            self.ctx.logger.exception("weibo: load user cookies failed")
+            return None
+        if not result.found or result.user is None:
+            return None
+        cookies = (result.user.meta or {}).get("weibo_cookies")
+        if not isinstance(cookies, dict) or not cookies:
+            return None
+        return {k: str(v) for k, v in cookies.items() if v}
+
+    async def _weibo_detail(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        mblogid: str,
+    ) -> None:
+        """抓单条微博详情并回复：文本 + 图片；视频 / 投票 / 卡片等富媒体一律忽略。"""
+        assert update.message is not None
+        user = update.effective_user
+        if user is None:
+            await update.message.reply_text("Cannot identify user.")
+            return
+
+        cookies = await self._load_user_weibo_cookies(str(user.id))
+        if not cookies:
+            await update.message.reply_text(
+                "No Weibo login found. Please run /weibo login first."
+            )
+            return
+
+        try:
+            async with Weibo(cookies=cookies) as wb:
+                detail = await wb.get_weibo_detail(mblogid)
+        except (WeiboSessionExpiredError, WeiboAuthRequiredError):
+            await update.message.reply_text(
+                "Weibo session expired or missing. Please run /weibo login again."
+            )
+            return
+        except WeiboApiError as exc:
+            self.ctx.logger.warning("weibo detail: get_weibo_detail failed: %s", exc)
+            await update.message.reply_text(f"Get Weibo detail failed: {exc}")
+            return
+        except Exception as exc:
+            self.ctx.logger.exception("weibo detail: unexpected error")
+            await update.message.reply_text(f"Get Weibo detail failed: {exc}")
+            return
+
+        # 转发微博的正文在 retweeted_status 里；把它的文本 / 图片也拼上，视频等仍忽略
+        text = Weibo.format_detail_text(detail)
+        photos = Weibo.extract_detail_photos(detail, limit=_WEIBO_MAX_PHOTOS)
+
+        if not text and not photos:
+            await update.message.reply_text("Weibo post has no text or images.")
+            return
+
+        # 单图 → send_photo 带 caption；多图 → media group（首张挂 caption）；纯文本 → reply_text
+        if not photos:
+            await update.message.reply_text(text or "(no text)")
+            return
+
+        caption = text or None
+        if len(photos) == 1:
+            try:
+                await update.message.reply_photo(photo=photos[0], caption=caption)
+                return
+            except Exception:
+                self.ctx.logger.exception("weibo detail: reply_photo failed")
+                # 兜底：文本 + 图片 URL
+                fallback = (text + "\n\n" if text else "") + photos[0]
+                await update.message.reply_text(fallback)
+                return
+
+        media = [
+            InputMediaPhoto(media=url, caption=caption if i == 0 else None)
+            for i, url in enumerate(photos)
+        ]
+        try:
+            await update.message.reply_media_group(media=media)
+        except Exception:
+            self.ctx.logger.exception("weibo detail: reply_media_group failed")
+            fallback = (text + "\n\n" if text else "") + "\n".join(photos)
+            await update.message.reply_text(fallback)
