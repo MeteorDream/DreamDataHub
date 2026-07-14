@@ -78,3 +78,4 @@ class Topic:
         raise TypeError(
             f"{type(self).__name__} is a Topic marker class and should not be instantiated"
         )
+

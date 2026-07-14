@@ -3,7 +3,7 @@
 
 [hub]
 log_level = "INFO"
-log_file = "datahub.log"
+log_file = "log/datahub.log"
 
 # --- 内置：系统 heartbeat 模块(建议开启) ------------------------------
 [module.heartbeat]
@@ -38,7 +38,7 @@ bot_name = "bot"
 whitelist_groups = []
 whitelist_users = []
 
-# --- IM：QQ (napcat 骨架，仅生命周期) ---------------------------------------
+# --- IM：NapCat Bot (napcat 骨架) ------------------------------------------
 [module.napcat_bot]
 enabled = false
 ws_url = "ws://127.0.0.1:3001"
