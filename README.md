@@ -4,8 +4,8 @@ Dream's Personal Data Hub — 一个基于 asyncio 的**微内核事件总线**�
 
 ```
 ┌───────────┐  im.message   ┌─────────────────┐  invoke     ┌──────────────┐
-│  im_qq    │──────────────▶│ weather_assistant│───────────▶│  llm_openai  │
-│ telegram  │               │  (编排 module)   │            │  (LLMChat)   │
+│ napcat_bot│──────────────▶│    llm_openai    │───────────▶│   weather    │
+│ telegram  │               │   (LLMChat)      │            │  (Forecast)  │
 └───────────┘◀─── im.reply ─┴─────────────────┴──── invoke ─┴──────────────┘
                                                               weather
 ```
@@ -58,10 +58,9 @@ services/               # 外部服务客户端（不依赖 hub，可独立使�
 
 module/                 # 具体业务模块（一个 Module 实例一个文件）
 ├── heartbeat.py / echo.py
-├── im_qq.py / telegram_bot.py
+├── napcat_bot.py / telegram_bot.py
 ├── llm_openai.py       #   Capability: LLMChatService
 ├── weather.py          #   Capability: WeatherForecast / WeatherLocation（provider 分发到 services/weather/）
-├── weather_assistant.py#   编排：subscribe IMMessage, invoke LLM + weather
 └── mysql.py
 ```
 
@@ -162,14 +161,14 @@ Hub 在注册时会检查 marker class 全局唯一；在调用时会对 `Params
 模块通过 `ctx.invoke(MarkerClass, ParamsInstance)` 调用其他模块的能力。**必须**通过构造参数 `requires=[...]` 显式声明，loader 会做严格校验。
 
 ```python
-# module/weather_assistant.py（节选）
+# module/example_orchestrator.py（示意）
 from hub import Context, Module
 from topics.im import IMMessage, IMReply
 from module.llm_openai import LLMChatService, LLMChatParams
 from module.weather import WeatherForecastService, WeatherForecastParams
 
 mod = Module(
-    "weather_assistant",
+    "example_orchestrator",
     requires=[LLMChatService, WeatherForecastService],   # 显式声明
 )
 
@@ -202,9 +201,9 @@ Loader 加载模块清单时会：
 配置里模块顺序可以任意，启动序由拓扑决定。示例日志：
 
 ```
-[INFO] load order (topological): heartbeat -> llm_openai -> weather -> weather_assistant
+[INFO] load order (topological): heartbeat -> llm_openai -> weather
 [INFO] hub: topic subscriptions (5 topics):
-[INFO]   im.message        (IMMessage      )  [3 subs]  <- [echo, llm_openai, weather_assistant]
+[INFO]   im.message        (IMMessage      )  [2 subs]  <- [echo, llm_openai]
 [INFO]   im.reply          (IMReply        )  [1 sub]   <- [echo]
 [INFO]   system.error      (SystemError    )  [1 sub]   <- [heartbeat]
 [INFO]   system.heartbeat  (SystemHeartbeat)  [1 sub]   <- [heartbeat]
@@ -279,12 +278,11 @@ key = "your_amap_key"
 | 模块 | 订阅 topic | 提供 capability | 说明 |
 |---|---|---|---|
 | `heartbeat` | `SystemReady` / `SystemHeartbeat` / `SystemError` | — | 系统心跳，定时发 `SystemHeartbeat` |
-| `im_qq` | `IMReply` / `QQReply` | — | OneBot v11/napcat WebSocket，跨平台 `IMMessage` 双发 |
+| `napcat_bot` | `IMReply` / `QQReply` | — | OneBot v11/napcat WebSocket，跨平台 `IMMessage` 双发 |
 | `telegram_bot` | `TelegramReply` | — | python-telegram-bot 22.x |
 | `llm_openai` | `IMMessage` | `LLMChatService` | OpenAI 兼容接口；顺带发布 `LLMExchange` |
 | `weather` | — | `WeatherForecastService` / `WeatherLocationService` | provider 可切换（amap / baidumap / xinzhi ...），实现在 `services/weather/` |
 | `mysql` | `DatabaseWrite` | — | aiomysql 池，按 Pydantic model 自动 DDL |
-| `weather_assistant` | `IMMessage` | — | 编排：意图判断 → 查天气 → 生成回复 |
 | `echo` | `SystemReady` / `IMMessage` / `IMReply` | — | 冒烟模块 |
 
 ## Bot 消息通信协议

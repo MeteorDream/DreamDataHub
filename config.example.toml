@@ -28,16 +28,6 @@ pool_size = 5
 # 目前注册的：bot_message / user
 enabled_tables = ["bot_message", "user"]
 
-# --- IM：QQ (OneBot v11 / napcat) -------------------------------------------
-[module.im_qq]
-enabled = false
-ws_url = "ws://127.0.0.1:3001"
-access_token = ""
-bot_id = 0
-bot_name = "bot"
-whitelist_groups = []
-whitelist_users = []
-
 # --- IM：NapCat Bot (napcat 骨架) ------------------------------------------
 [module.napcat_bot]
 enabled = false
@@ -82,11 +72,3 @@ timeout = 15.0
 # key = "your_baidu_key"
 # [module.weather.xinzhi]
 # key = "your_xinzhi_key"
-
-# --- WorkFlow ----------------------------------------------------------------
-# 天气助理编排模块 —— 订阅 im.message，通过 ctx.invoke 调用 llm.chat 和 weather.forecast
-# 依赖：llm_openai（提供 LLMChatService）+ weather（提供 WeatherForecastService）
-#      必须同时启用这两个模块，否则 loader 会在启动阶段拒绝加载
-
-[module.weather_assistant]
-enabled = true

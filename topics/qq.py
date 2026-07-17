@@ -16,13 +16,13 @@ class QQMessage(Topic):
     """QQ 平台专属入站 —— 需要仅针对 QQ 逻辑（如 QQ 群指令）时订阅这里。"""
 
     name: ClassVar[str] = "qq.message"
-    description: ClassVar[str] = "QQ 入站；im_qq 双发之一"
+    description: ClassVar[str] = "QQ 入站；napcat_bot 双发之一"
     Payload: ClassVar[type[BaseModel]] = BotEvent
 
 
 class QQReply(Topic):
-    """QQ 平台专属出站 —— 业务显式定向到 QQ 时发这里，im_qq 直接处理。"""
+    """QQ 平台专属出站 —— 业务显式定向到 QQ 时发这里，napcat_bot 直接处理。"""
 
     name: ClassVar[str] = "qq.reply"
-    description: ClassVar[str] = "QQ 出站，仅 im_qq 处理"
+    description: ClassVar[str] = "QQ 出站，仅 napcat_bot 处理"
     Payload: ClassVar[type[BaseModel]] = BotEvent
