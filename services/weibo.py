@@ -698,6 +698,39 @@ class Weibo:
                     return urls
         return urls
 
+    @staticmethod
+    async def download_photo(url: str, *, http_timeout: float = 30.0) -> bytes:
+        """下载一张 sinaimg 图片，返回原始字节。
+
+        微博的 CDN（``*.sinaimg.cn``）对图片有 Referer 校验 —— 直接把 URL 给
+        Telegram / QQ 的服务端拉会拿到 403。所以 IM 侧转发必须先本地下载再上传，
+        请求头这里统一带上 ``Referer: https://weibo.com/``。
+
+        Raises:
+            WeiboApiError: HTTP 4xx/5xx，或任何 ``httpx.RequestError``
+                （超时、DNS/连接错误、协议错误、重定向环、非法 URL 等）。
+        """
+        headers = {
+            "User-Agent": _HEADERS["User-Agent"],
+            "Referer": f"{_Endpoints.BASE_URL}/",
+        }
+        try:
+            async with httpx.AsyncClient(
+                headers=headers,
+                follow_redirects=True,
+                timeout=httpx.Timeout(http_timeout),
+            ) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                return resp.content
+        except httpx.HTTPStatusError as exc:
+            raise WeiboApiError(
+                f"weibo: download photo HTTP {exc.response.status_code} from {url}",
+                code=exc.response.status_code,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise WeiboApiError(f"weibo: download photo network error: {exc}") from exc
+
     # ── 扫码登录 ────────────────────────────────────────────────────────
     #
     # 拆成两个独立步骤，让 workflow 场景可以：

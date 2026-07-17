@@ -17,6 +17,7 @@ from telegram import (
     BotCommandScopeAllGroupChats,
     BotCommandScopeAllPrivateChats,
     BotCommandScopeDefault,
+    BotCommandScopeAllChatAdministrators,
     InputMediaPhoto,
     ReplyKeyboardRemove,
     Update,
@@ -148,6 +149,7 @@ class DreamBotHandle(BaseTelegramHandle):
             BotCommandScopeDefault,
             BotCommandScopeAllPrivateChats,
             BotCommandScopeAllGroupChats,
+            BotCommandScopeAllChatAdministrators,
         ):
             scope_name = scope_cls.__name__
             result = await self.bot.set_my_commands(commands, scope=scope_cls())
@@ -670,10 +672,32 @@ class DreamBotHandle(BaseTelegramHandle):
             await update.message.reply_text(text or "(no text)")
             return
 
+        # sinaimg 有 Referer 校验，直连给 TG 服务端会 403 —— 必须本地下载再上传
+        downloads = await asyncio.gather(
+            *(Weibo.download_photo(url) for url in photos),
+            return_exceptions=True,
+        )
+        blobs: list[bytes] = []
+        failed: list[str] = []
+        for url, item in zip(photos, downloads, strict=True):
+            if isinstance(item, bytes):
+                blobs.append(item)
+            else:
+                self.ctx.logger.warning(
+                    "weibo detail: download photo failed url=%s err=%s", url, item
+                )
+                failed.append(url)
+
         caption = text or None
-        if len(photos) == 1:
+        if not blobs:
+            # 所有图片都下载失败 —— 兜底成"文本 + 图片 URL"，让用户至少能自己点开看
+            fallback = (text + "\n\n" if text else "") + "\n".join(failed)
+            await update.message.reply_text(fallback or "Failed to fetch photos.")
+            return
+
+        if len(blobs) == 1:
             try:
-                await update.message.reply_photo(photo=photos[0], caption=caption)
+                await update.message.reply_photo(photo=blobs[0], caption=caption)
                 return
             except Exception:
                 self.ctx.logger.exception("weibo detail: reply_photo failed")
@@ -683,8 +707,8 @@ class DreamBotHandle(BaseTelegramHandle):
                 return
 
         media = [
-            InputMediaPhoto(media=url, caption=caption if i == 0 else None)
-            for i, url in enumerate(photos)
+            InputMediaPhoto(media=blob, caption=caption if i == 0 else None)
+            for i, blob in enumerate(blobs)
         ]
         try:
             await update.message.reply_media_group(media=media)
