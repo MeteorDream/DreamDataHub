@@ -49,8 +49,12 @@ from message.bot import (
 )
 from topics.im import IMReply
 from topics.qq import QQReply
+from module.llm_openai import LLMChatService, LLMChatParams, LLMChatResult, reply
 
-mod = Module("napcat_bot")
+mod = Module(
+    "napcat_bot",
+    requires=[LLMChatService],
+)
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +350,36 @@ async def _on_message_event(ev: dict, ctx: Context) -> None:
     if _should_echo_repeat(history, raw_text):
         ctx.logger.info("napcat_bot: repeat.detect session=%s text=%r", session_id, raw_text[:80])
         await _send_reply(event, ctx)
+    elif is_mentioned:
+        ctx.logger.info("napcat_bot: mentioned.detect session=%s text=%r", session_id, raw_text[:80])
+        reply_data: LLMChatResult = await ctx.invoke(
+            LLMChatService, LLMChatParams(
+                messages=[
+                    {"role": "system", "content": _build_chat_system_prompt(history)},
+                    {"role": "user", "content": raw_text},
+                ]
+            )
+        )
+        if reply_data.success:
+            reply_text = reply_data.reply
+        else:
+            reply_text = f"喵喵喵? 小猫咪出错了喵~ ({reply_data.reply})"
+        reply_event = BotEvent(
+            id=message_id,
+            platform="qq",
+            time=float(ev.get("time", 0) or 0),
+            type="message",
+            detail_type=detail,
+            sub_type=sub_type_label,
+            message_id=message_id,
+            message=[TextSegment(text=reply_text)],
+            bot_id=self_user_id,
+            user_id=user_id,
+            user_name=nickname,
+            session_id=session_id,
+            session_name=str(ev.get("group_name") or nickname or session_id),
+        )
+        await _send_reply(reply_event, ctx)
 
     # await ctx.publish(IMMessage, event)
     # await ctx.publish(QQMessage, event)
@@ -369,6 +403,70 @@ def _should_echo_repeat(history: deque[BotEvent], raw_text: str) -> bool:
     if len(history) >= 4 and history[-4].message == history[-1].message:
         return False
     return True
+
+
+def _build_chat_system_prompt(history: deque[BotEvent]) -> str:
+    """构筑群聊 system 提示：人设 + 最近历史消息（含用户信息）。
+
+    history 末尾即本次触发回复的消息，也会出现在记录里，让 LLM 看清是谁、
+    在什么上下文下 @ 了它；该消息仍以 user 角色单独下发，作为「请回复这条」
+    的显式信号。
+    """
+    persona = "你是一个可爱的猫猫助手，回答问题时要用可爱的语气。"
+    log = _format_history_log(history)
+    if not log:
+        return persona
+    return (
+        f"{persona}\n"
+        "以下是群里最近的聊天记录（含用户信息），供你了解上下文：\n"
+        f"{log}"
+    )
+
+
+def _format_history_log(history: deque[BotEvent]) -> str:
+    """历史消息 → 「昵称(ID): 内容」逐行文本；非文本段降级为占位符。"""
+    lines: list[str] = []
+    for ev in history:
+        body = _event_text(ev)
+        if not body:
+            continue
+        lines.append(f"{_format_user_label(ev)}: {body}")
+    return "\n".join(lines)
+
+
+def _format_user_label(event: BotEvent) -> str:
+    """用户标识：有昵称则「昵称(ID)」，否则回退到 ID / unknown。"""
+    name = (event.user_name or "").strip()
+    uid = event.user_id or ""
+    if name and name != uid:
+        return f"{name}({uid})"
+    return name or uid or "unknown"
+
+
+def _event_text(event: BotEvent) -> str:
+    """把 BotEvent 段列表压成一行文本；非文本段用中文占位符。"""
+    parts: list[str] = []
+    for seg in event.message:
+        t = seg.type
+        if t == "Text":
+            parts.append(seg.text)  # type: ignore[union-attr]
+        elif t == "Image":
+            parts.append("[图片]")
+        elif t == "Audio":
+            parts.append("[语音]")
+        elif t == "Video":
+            parts.append("[视频]")
+        elif t == "File":
+            parts.append(f"[文件:{seg.filename}]")  # type: ignore[union-attr]
+        elif t == "At":
+            parts.append("@全体成员" if seg.at_all else f"@{seg.user_id}")  # type: ignore[union-attr]
+        elif t == "Reply":
+            parts.append(f"[回复:{seg.message_id}]")  # type: ignore[union-attr]
+        elif t == "Face":
+            parts.append("[表情]")
+        else:
+            parts.append(f"[{t}]")
+    return "".join(parts).strip()
 
 
 def _resolve_self_user_id(ev: dict, ctx: Context) -> str:

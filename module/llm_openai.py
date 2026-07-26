@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 from pydantic import BaseModel, Field
+from openai import AsyncOpenAI, RateLimitError, APIStatusError
 
 from hub import Capability, Context, Module
 from message.bot import BotEvent, TextSegment
@@ -39,8 +40,9 @@ class LLMChatParams(BaseModel):
 class LLMChatResult(BaseModel):
     """``LLMChatService`` 返回值。"""
 
-    reply: str
-    model: str
+    success: bool = Field(default=True, description="调用是否成功；False 时 reply 里是错误信息")
+    reply: str = Field(default="", description="LLM 回复文本")
+    model: str = Field(default="", description="实际使用的模型名")
 
 
 class LLMChatService(Capability):
@@ -56,12 +58,6 @@ mod = Module("llm_openai")
 
 @mod.on_startup
 async def setup(ctx: Context) -> None:
-    try:
-        from openai import AsyncOpenAI
-    except ImportError:
-        ctx.logger.error("llm_openai: 未安装 openai；`uv add openai`")
-        ctx.state.client = None
-        return
 
     api_key = ctx.config.get("api_key", "")
     base_url = ctx.config.get("base_url") or None
@@ -158,11 +154,17 @@ async def chat_capability(ctx: Context, params: LLMChatParams) -> LLMChatResult:
             model=model,
             messages=params.messages,
         )
+    except RateLimitError as e:
+        ctx.logger.warning("llm_openai: chat capability rate limit exceeded: %s", e.message)
+        return LLMChatResult(success=False, reply="RateLimitError", model=model)
+    except APIStatusError as e:
+        ctx.logger.warning("llm_openai: chat capability API status error: %s", e.message)
+        return LLMChatResult(success=False, reply="APIStatusError", model=model)
     except Exception:
         ctx.logger.exception("llm_openai: chat capability failed")
         raise
     text = resp.choices[0].message.content or ""
-    return LLMChatResult(reply=text, model=model)
+    return LLMChatResult(success=True, reply=text, model=model)
 
 
 def _extract_text(event: BotEvent) -> str:
