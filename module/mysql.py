@@ -156,6 +156,7 @@ async def on_write(ctx: Context, payload: DatabaseWritePayload) -> None:
 
     try:
         async with pool.acquire() as conn, conn.cursor() as cur:
+            ctx.logger.debug("mysql: executing %s table=%s, sql=%s, params=%s", "upsert" if payload.upsert else "insert", table, sql, params)
             await cur.execute(sql, params)
             ctx.logger.info(
                 "mysql: %s ok table=%s lastrowid=%s rows=%d",
@@ -194,6 +195,7 @@ async def query_user(ctx: Context, params: UserQueryParams) -> UserQueryResult:
 
     try:
         async with pool.acquire() as conn, conn.cursor() as cur:
+            ctx.logger.debug("user.query executing sql=%s params=(%s, %s)", sql, params.platform, params.user_id)
             await cur.execute(sql, (params.platform, params.user_id))
             row = await cur.fetchone()
     except Exception:

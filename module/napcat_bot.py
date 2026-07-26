@@ -222,6 +222,7 @@ def _on_ws_frame(raw: str, ctx: Context) -> None:
     """
     try:
         data: dict[str, Any] = json.loads(raw)
+        ctx.logger.debug("napcat_bot: ws.frame data: %s", json.dumps(data, ensure_ascii=False))
     except json.JSONDecodeError:
         ctx.logger.warning("napcat_bot: non-JSON frame, drop (%d bytes)", len(raw))
         return

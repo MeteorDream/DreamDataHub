@@ -21,7 +21,10 @@ from utils.logger import init_logging
 
 logger = logging.getLogger("main")
 # httpx 设置为 warning 避免日志有大量的请求日志
-logging.getLogger("httpx").setLevel(logging.WARNING)
+for module in ("httpx", ):
+    logging.getLogger(module).setLevel(logging.WARNING)
+for module in ("httpcore", "websockets", "telegram"):
+    logging.getLogger(module).setLevel(logging.INFO)
 
 
 def _load_config(path: Path) -> dict:
