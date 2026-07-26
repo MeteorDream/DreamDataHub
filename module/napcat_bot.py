@@ -356,10 +356,10 @@ async def _on_message_event(ev: dict, ctx: Context) -> None:
             LLMChatService, LLMChatParams(
                 messages=[
                     {"role": "system", "content": _build_chat_system_prompt(history)},
-                    {"role": "user", "content": raw_text},
+                    {"role": "user", "content": f"{_format_user_label(event)}: {_event_text(event)}"},
                 ]
             )
-        )
+        )   # type: ignore
         if reply_data.success:
             reply_text = reply_data.reply
         else:
@@ -372,7 +372,10 @@ async def _on_message_event(ev: dict, ctx: Context) -> None:
             detail_type=detail,
             sub_type=sub_type_label,
             message_id=message_id,
-            message=[TextSegment(text=reply_text)],
+            message=[
+                ReplySegment(message_id=message_id),
+                TextSegment(text=reply_text)
+            ],
             bot_id=self_user_id,
             user_id=user_id,
             user_name=nickname,
