@@ -87,4 +87,3 @@ def _summarize(event: BotEvent) -> str:
         else:
             parts.append(f"[{seg.type}]")
     return f"{event.platform}/{event.session_id}: " + " ".join(parts)
-

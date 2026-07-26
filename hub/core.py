@@ -103,9 +103,7 @@ class Hub:
 
     # ---- 公开 API（给 Context / 主程序）---------------------------------
 
-    async def publish(
-        self, topic: type[Topic], payload: BaseModel | dict[str, Any]
-    ) -> None:
+    async def publish(self, topic: type[Topic], payload: BaseModel | dict[str, Any]) -> None:
         """投递事件到 topic。立即返回；每个订阅者各起一个 task。
 
         参数:
@@ -248,9 +246,7 @@ class Hub:
         module_name, fn = entry
         ctx = self._module_contexts.get(module_name)
         if ctx is None:
-            raise RuntimeError(
-                f"module {module_name!r} has no context (capability {cap.__name__})"
-            )
+            raise RuntimeError(f"module {module_name!r} has no context (capability {cap.__name__})")
 
         # 入参校验：允许调用方传 dict 或 Params 实例，都归一到 Params 实例
         try:

@@ -82,4 +82,3 @@ async def _heartbeat(ctx: Context) -> None:
     except asyncio.CancelledError:
         ctx.logger.debug("heartbeat cancelled")
         raise
-

@@ -111,9 +111,7 @@ class AMapProvider(WeatherProvider):
             except httpx.HTTPError as exc:
                 raise WeatherProviderError(f"amap {action}: HTTP error: {exc}") from exc
         if resp.status_code != 200:
-            raise WeatherProviderError(
-                f"amap {action}: HTTP {resp.status_code}"
-            )
+            raise WeatherProviderError(f"amap {action}: HTTP {resp.status_code}")
         data = resp.json()
         if data.get("status") != "1":
             raise WeatherProviderError(

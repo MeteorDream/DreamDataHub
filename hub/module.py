@@ -7,18 +7,25 @@ loader 会扫描该 .py 的 globals 找到它。
 
     from hub import Capability, Module, Topic
 
+
     # 声明能力契约
     class MyParams(BaseModel): ...
+
+
     class MyResult(BaseModel): ...
+
+
     class MyService(Capability):
         name = "my.service"
         Params = MyParams
         Result = MyResult
 
+
     # 声明 topic
     class MyEvent(Topic):
         name = "my.event"
         Payload = MyPayload
+
 
     # 声明模块（如果依赖别的能力，用 requires 显式声明）
     mod = Module("my_module", requires=[SomeOtherService])
@@ -28,7 +35,7 @@ loader 会扫描该 .py 的 globals 找到它。
     async def setup(ctx): ...
 
 
-    @mod.on(MyEvent)                       # ← 订阅 topic 用 Topic 类
+    @mod.on(MyEvent)  # ← 订阅 topic 用 Topic 类
     async def handle(ctx, payload): ...
 
 
@@ -97,9 +104,7 @@ class Module:
             raise TypeError(f"on() requires a Topic subclass, got {topic!r}")
         for attr in ("name", "Payload"):
             if not hasattr(topic, attr):
-                raise TypeError(
-                    f"Topic {topic.__name__} missing required class var {attr!r}"
-                )
+                raise TypeError(f"Topic {topic.__name__} missing required class var {attr!r}")
 
         def decorator(fn: Handler) -> Handler:
             self._handlers.setdefault(topic, []).append(fn)
@@ -107,9 +112,7 @@ class Module:
 
         return decorator
 
-    def provides(
-        self, cap: type[Capability]
-    ) -> Callable[[CapabilityHandler], CapabilityHandler]:
+    def provides(self, cap: type[Capability]) -> Callable[[CapabilityHandler], CapabilityHandler]:
         """声明模块提供的能力（marker class），可被其他模块通过 ``ctx.invoke`` 调用。
 
         marker class 必须已定义 ``name`` / ``Params`` / ``Result`` 三个 ClassVar。
@@ -118,21 +121,18 @@ class Module:
         用法::
 
             @mod.provides(WeatherForecastService)
-            async def my_forecast(ctx: Context, params: WeatherForecastParams) -> WeatherForecastResult:
-                ...
+            async def my_forecast(
+                ctx: Context, params: WeatherForecastParams
+            ) -> WeatherForecastResult: ...
         """
         if not (isinstance(cap, type) and issubclass(cap, Capability)):
             raise TypeError(f"provides() requires a Capability subclass, got {cap!r}")
         # 校验 marker class 必需的三个字段都齐备
         for attr in ("name", "Params", "Result"):
             if not hasattr(cap, attr):
-                raise TypeError(
-                    f"Capability {cap.__name__} missing required class var {attr!r}"
-                )
+                raise TypeError(f"Capability {cap.__name__} missing required class var {attr!r}")
         if cap in self._provides:
-            raise ValueError(
-                f"Module {self.name!r} already provides capability {cap.__name__}"
-            )
+            raise ValueError(f"Module {self.name!r} already provides capability {cap.__name__}")
 
         def decorator(fn: CapabilityHandler) -> CapabilityHandler:
             self._provides[cap] = fn

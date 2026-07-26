@@ -3,7 +3,7 @@
 
 [hub]
 log_level = "INFO"
-log_file = "log/datahub.log"
+log_dir = "log"
 
 # --- 内置：系统 heartbeat 模块(建议开启) ------------------------------
 [module.heartbeat]

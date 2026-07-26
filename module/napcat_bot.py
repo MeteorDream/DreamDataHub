@@ -23,8 +23,8 @@ import json
 import logging
 import time
 import uuid
-from typing import Any
 from collections import deque
+from typing import Any
 
 from hub import Context, Module
 from message.bot import (
@@ -40,15 +40,15 @@ from message.bot import (
     JsonSegment,
     LocationSegment,
     MusicSegment,
-    TextSegment,
     PokeSegment,
     ReplySegment,
     ShareSegment,
+    TextSegment,
     UnknownSegment,
     VideoSegment,
 )
-from topics.im import IMMessage, IMReply
-from topics.qq import QQMessage, QQReply
+from topics.im import IMReply
+from topics.qq import QQReply
 
 mod = Module("napcat_bot")
 
@@ -291,7 +291,9 @@ async def _on_message_event(ev: dict, ctx: Context) -> None:
     elif detail == "private":
         session_id = f"private:{user_id}"
         if user_id not in ctx.state.whitelist_users:
-            ctx.logger.debug("napcat_bot: msg.skip not_whitelisted user=%s mid=%s", user_id, message_id)
+            ctx.logger.debug(
+                "napcat_bot: msg.skip not_whitelisted user=%s mid=%s", user_id, message_id
+            )
             return
     else:
         ctx.logger.debug("napcat_bot: msg.skip unsupported_detail=%s mid=%s", detail, message_id)

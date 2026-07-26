@@ -83,8 +83,7 @@ async def setup(ctx: Context) -> None:
     provider_name = str(cfg.get("provider", "amap"))
     if provider_name not in PROVIDERS:
         raise RuntimeError(
-            f"weather: unknown provider {provider_name!r}, "
-            f"available: {sorted(PROVIDERS)}"
+            f"weather: unknown provider {provider_name!r}, available: {sorted(PROVIDERS)}"
         )
     provider_cls, config_cls = PROVIDERS[provider_name]
 
@@ -113,9 +112,7 @@ async def teardown(ctx: Context) -> None:
 
 
 @mod.provides(WeatherLocationService)
-async def location_capability(
-    ctx: Context, params: WeatherLocationParams
-) -> LocationData:
+async def location_capability(ctx: Context, params: WeatherLocationParams) -> LocationData:
     """逆地理编码 —— 委托给 ctx.state.provider。"""
     try:
         return await ctx.state.provider.location(params.longitude, params.latitude)
@@ -124,9 +121,7 @@ async def location_capability(
 
 
 @mod.provides(WeatherForecastService)
-async def forecast_capability(
-    ctx: Context, params: WeatherForecastParams
-) -> ForecastData:
+async def forecast_capability(ctx: Context, params: WeatherForecastParams) -> ForecastData:
     """天气预报 —— 委托给 ctx.state.provider。"""
     try:
         return await ctx.state.provider.forecast(params.adcode)

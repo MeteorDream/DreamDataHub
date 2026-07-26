@@ -38,7 +38,7 @@ async def amain() -> None:
     hub_cfg = config.get("hub", {})
     init_logging(
         level=getattr(logging, hub_cfg.get("log_level", "INFO").upper(), logging.INFO),
-        log_file=hub_cfg.get("log_file", "datahub.log"),
+        log_dir=hub_cfg.get("log_dir", "log"),
         fmt="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
     )
     logger.info("DataHub starting (config=%s)", config_path.resolve())

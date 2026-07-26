@@ -40,9 +40,7 @@ class Context:
         self.state = SimpleNamespace()
         self.hub_event = hub_event  # shutdown 时被置位
 
-    async def publish(
-        self, topic: type[Topic], payload: BaseModel | dict[str, Any]
-    ) -> None:
+    async def publish(self, topic: type[Topic], payload: BaseModel | dict[str, Any]) -> None:
         """投递事件到 topic。立即返回（fire-and-forget）。
 
         参数:
@@ -55,9 +53,7 @@ class Context:
         """
         await self._hub.publish(topic, payload)
 
-    async def invoke(
-        self, cap: type[Capability], params: BaseModel | dict[str, Any]
-    ) -> BaseModel:
+    async def invoke(self, cap: type[Capability], params: BaseModel | dict[str, Any]) -> BaseModel:
         """调用另一个模块提供的能力。
 
         参数:

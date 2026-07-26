@@ -22,7 +22,6 @@ from message.bot import BotEvent, TextSegment
 from topics.im import IMMessage, IMReply
 from topics.llm import LLMExchange, LLMExchangePayload
 
-
 # ---------------------------------------------------------------------------
 # Capability：LLMChatService
 # ---------------------------------------------------------------------------
@@ -169,4 +168,3 @@ async def chat_capability(ctx: Context, params: LLMChatParams) -> LLMChatResult:
 def _extract_text(event: BotEvent) -> str:
     parts = [seg.text for seg in event.message if seg.type == "Text"]
     return "".join(parts).strip()
-

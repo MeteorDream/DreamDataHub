@@ -13,17 +13,21 @@
     class LLMChatParams(BaseModel):
         messages: list[dict[str, str]]
 
+
     class LLMChatResult(BaseModel):
         reply: str
+
 
     class LLMChatService(Capability):
         name = "llm.chat"
         Params = LLMChatParams
         Result = LLMChatResult
 
+
     # 提供方：
     @mod.provides(LLMChatService)
     async def chat(ctx: Context, params: LLMChatParams) -> LLMChatResult: ...
+
 
     # 调用方：
     result: LLMChatResult = await ctx.invoke(LLMChatService, LLMChatParams(...))
@@ -65,8 +69,7 @@ class Capability:
                 val = cls.__dict__[attr]
                 if not (isinstance(val, type) and issubclass(val, BaseModel)):
                     raise TypeError(
-                        f"{cls.__name__}.{attr} must be a pydantic BaseModel subclass, "
-                        f"got {val!r}"
+                        f"{cls.__name__}.{attr} must be a pydantic BaseModel subclass, got {val!r}"
                     )
 
     def __init__(self) -> None:

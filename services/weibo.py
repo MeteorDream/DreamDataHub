@@ -60,10 +60,7 @@ class WeiboConfig(BaseModel):
     request_delay: float = Field(
         default=1.0, ge=0, description="相邻请求最小间隔（秒），0 关闭节流"
     )
-    max_retries: int = Field(
-        default=3, ge=0, le=10, description="429/5xx/网络错误最大重试次数"
-    )
-
+    max_retries: int = Field(default=3, ge=0, le=10, description="429/5xx/网络错误最大重试次数")
 
 
 # ---------------------------------------------------------------------------
@@ -303,9 +300,7 @@ class Weibo:
         cfg = config or WeiboConfig()
         self._cookies = dict(cookies if cookies is not None else cfg.cookies)
         self._timeout = timeout if timeout is not None else cfg.timeout
-        self._request_delay = (
-            request_delay if request_delay is not None else cfg.request_delay
-        )
+        self._request_delay = request_delay if request_delay is not None else cfg.request_delay
         self._max_retries = max_retries if max_retries is not None else cfg.max_retries
 
         self._client: httpx.AsyncClient | None = None
@@ -532,7 +527,7 @@ class Weibo:
                     "raw_hot": 100000,
                     "num": 100000,
                     "rank": 1,
-                    "label_name": "热" / "新" / "沸" / ...
+                    "label_name": "热" / "新" / "沸" / ...,
                 }
         """
         return await self._get(_Endpoints.HOT_SEARCH, action=self.HOT_SEARCH_ACTION)
@@ -664,9 +659,7 @@ class Weibo:
         return "\n\n".join(parts)
 
     @staticmethod
-    def extract_detail_photos(
-        detail: dict[str, Any], *, limit: int | None = None
-    ) -> list[str]:
+    def extract_detail_photos(detail: dict[str, Any], *, limit: int | None = None) -> list[str]:
         """按 ``pic_ids`` 顺序抽图片 URL；同时看 ``retweeted_status``。
 
         对每张图，从 ``pic_infos[<pic_id>]`` 里按 :data:`_PHOTO_SIZE_PRIORITY`
@@ -949,4 +942,3 @@ async def _finalize_qr_login(
             logger.warning("weibo: alt token exchange failed: %s", exc)
 
     return cookies
-

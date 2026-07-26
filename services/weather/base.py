@@ -80,9 +80,7 @@ class ForecastData(BaseModel):
     province: str = ""
     report_time: str = Field(default="", description="预报发布时间")
     casts: list[DailyForecast] = Field(default_factory=list)
-    raw: dict[str, Any] = Field(
-        default_factory=dict, description="provider 原始响应"
-    )
+    raw: dict[str, Any] = Field(default_factory=dict, description="provider 原始响应")
 
 
 class WeatherProviderError(Exception):

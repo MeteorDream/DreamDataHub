@@ -14,10 +14,10 @@ from telebot import util
 from telegram import (
     Bot,
     BotCommand,
+    BotCommandScopeAllChatAdministrators,
     BotCommandScopeAllGroupChats,
     BotCommandScopeAllPrivateChats,
     BotCommandScopeDefault,
-    BotCommandScopeAllChatAdministrators,
     InputMediaPhoto,
     ReplyKeyboardRemove,
     Update,
@@ -173,9 +173,7 @@ class DreamBotHandle(BaseTelegramHandle):
         )
         user = update.effective_user
         # 引用消息 ID —— Telegram 的 reply_to_message 对应我们的 quote_id
-        quote_id = (
-            str(msg.reply_to_message.message_id) if msg.reply_to_message else None
-        )
+        quote_id = str(msg.reply_to_message.message_id) if msg.reply_to_message else None
         event = BotEvent(
             id=str(msg.message_id),
             platform="telegram",
@@ -293,17 +291,13 @@ class DreamBotHandle(BaseTelegramHandle):
         try:
             location_info = await self.ctx.invoke(
                 WeatherLocationService,
-                WeatherLocationParams(
-                    longitude=location.longitude, latitude=location.latitude
-                ),
+                WeatherLocationParams(longitude=location.longitude, latitude=location.latitude),
             )
         except RuntimeError as exc:
             await update.message.reply_text(f"Get address from location failed: {exc}")
             return
         address = location_info.formatted_address or "未知"
-        await update.message.reply_text(
-            f"Get address from location success, Address: {address}"
-        )
+        await update.message.reply_text(f"Get address from location success, Address: {address}")
 
         # 落库：user 表按 (platform, user_id) upsert，location 信息落到 meta 字段
         meta = {
@@ -410,9 +404,7 @@ class DreamBotHandle(BaseTelegramHandle):
         )
         adcode = location_info.adcode
         if not adcode:
-            await update.message.reply_text(
-                f"Get weather failed: no adcode for address {address}"
-            )
+            await update.message.reply_text(f"Get weather failed: no adcode for address {address}")
             return
 
         try:
@@ -426,9 +418,7 @@ class DreamBotHandle(BaseTelegramHandle):
             )
             return
 
-        weather_message = build_weather_message(
-            forecast, parse_mode="html", address=address
-        )
+        weather_message = build_weather_message(forecast, parse_mode="html", address=address)
         await update.message.reply_html(weather_message)
 
     async def weibo_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -462,9 +452,7 @@ class DreamBotHandle(BaseTelegramHandle):
             "  /weibo <url> — fetch a Weibo post (text + images) by its URL"
         )
 
-    async def _weibo_login(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
+    async def _weibo_login(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         assert update.message is not None
         user = update.effective_user
         if user is None:
@@ -530,9 +518,7 @@ class DreamBotHandle(BaseTelegramHandle):
             if result.status == "scanned" and not notified_scanned:
                 notified_scanned = True
                 try:
-                    await update.message.reply_text(
-                        "QR scanned. Please confirm on your phone."
-                    )
+                    await update.message.reply_text("QR scanned. Please confirm on your phone.")
                 except Exception:
                     self.ctx.logger.exception("weibo login: notify scanned failed")
 
@@ -575,9 +561,7 @@ class DreamBotHandle(BaseTelegramHandle):
         )
         await update.message.reply_text("Weibo login success, cookies saved.")
 
-    async def _weibo_hot(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
+    async def _weibo_hot(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         assert update.message is not None
         # get_hot_band 是公开接口 —— 不需要登录/ cookie；直接匿名调用即可
         try:
@@ -637,9 +621,7 @@ class DreamBotHandle(BaseTelegramHandle):
 
         cookies = await self._load_user_weibo_cookies(str(user.id))
         if not cookies:
-            await update.message.reply_text(
-                "No Weibo login found. Please run /weibo login first."
-            )
+            await update.message.reply_text("No Weibo login found. Please run /weibo login first.")
             return
 
         try:

@@ -282,10 +282,7 @@ def build_insert(
 
     quoted_cols = [f"`{c}`" for c in cols]
     placeholders = ", ".join(["%s"] * len(cols))
-    sql = (
-        f"INSERT INTO `{model.__table__}` ({', '.join(quoted_cols)}) "
-        f"VALUES ({placeholders})"
-    )
+    sql = f"INSERT INTO `{model.__table__}` ({', '.join(quoted_cols)}) VALUES ({placeholders})"
 
     if upsert:
         # UPDATE 部分：跳过主键 + created_at（不应被覆盖）

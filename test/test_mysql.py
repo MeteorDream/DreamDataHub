@@ -75,10 +75,7 @@ def test_create_ddl_for_user() -> None:
     assert "`meta` JSON NOT NULL" in ddl
     assert "`created_at` DATETIME NULL DEFAULT CURRENT_TIMESTAMP" in ddl
     # updated_at 自动加 ON UPDATE 触发器
-    assert (
-        "`updated_at` DATETIME NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
-        in ddl
-    )
+    assert "`updated_at` DATETIME NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP" in ddl
     # 联合唯一索引
     assert "UNIQUE KEY `uk_platform_user_id` (`platform`, `user_id`)" in ddl
 
@@ -298,7 +295,9 @@ def test_bot_message_from_event_round_trip() -> None:
     assert sql.count("%s") == 12
     assert len(params) == 12
     # message 列被序列化成 JSON 字符串
-    message_param = params[6]  # platform=0, time=1, type=2, detail_type=3, sub_type=4, message_id=5, message=6
+    message_param = params[
+        6
+    ]  # platform=0, time=1, type=2, detail_type=3, sub_type=4, message_id=5, message=6
     assert isinstance(message_param, str)
     assert '"Text"' in message_param
     assert '"hello"' in message_param
@@ -354,11 +353,7 @@ def test_on_write_handles_business_edge_cases() -> None:
     """
     ctx = _make_ctx()
     # 未知 table：警告 + skip
-    asyncio.run(
-        mysql_mod.on_write(
-            ctx, DatabaseWritePayload(table="no_such_table", row={})
-        )
-    )
+    asyncio.run(mysql_mod.on_write(ctx, DatabaseWritePayload(table="no_such_table", row={})))
     # pool=None（setup 失败降级）：debug + skip
     asyncio.run(
         mysql_mod.on_write(

@@ -18,13 +18,18 @@ Topic 就是纯广播。
     class IMEventPayload(BaseModel):
         event: BotEvent
 
+
     class IMMessage(Topic):
         name = "im.message"
         description = "跨 IM 平台的入站消息广播"
-        Payload = BotEvent    # 也可以直接用一个已有的 pydantic 模型
+        Payload = BotEvent  # 也可以直接用一个已有的 pydantic 模型
+
 
     # 发布方：
-    await ctx.publish(IMMessage, event)   # event: BotEvent 会被 model_validate 归一化
+    await ctx.publish(
+        IMMessage, event
+    )  # event: BotEvent 会被 model_validate 归一化
+
 
     # 订阅方：
     @mod.on(IMMessage)
@@ -70,12 +75,10 @@ class Topic:
             val = cls.__dict__["Payload"]
             if not (isinstance(val, type) and issubclass(val, BaseModel)):
                 raise TypeError(
-                    f"{cls.__name__}.Payload must be a pydantic BaseModel subclass, "
-                    f"got {val!r}"
+                    f"{cls.__name__}.Payload must be a pydantic BaseModel subclass, got {val!r}"
                 )
 
     def __init__(self) -> None:
         raise TypeError(
             f"{type(self).__name__} is a Topic marker class and should not be instantiated"
         )
-
