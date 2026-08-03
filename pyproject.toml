@@ -8,6 +8,7 @@ dependencies = [
     "aiomysql>=0.3.2",
     "croniter>=6.2.2",
     "cryptography",
+    "deep-translator>=1.11.4",
     "openai>=2.42.0",
     "pydantic>=2.13.4",
     "pytelegrambotapi>=4.34.0",

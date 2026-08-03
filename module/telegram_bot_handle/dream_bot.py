@@ -8,8 +8,10 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import re
 import traceback
 
+from deep_translator import GoogleTranslator
 from telebot import util
 from telegram import (
     Bot,
@@ -97,6 +99,7 @@ class DreamBotHandle(BaseTelegramHandle):
         self.app.add_handler(CommandHandler("location", self.get_location))
         self.app.add_handler(CommandHandler("weather", self.get_weather))
         self.app.add_handler(CommandHandler("weibo", self.weibo_command))
+        self.app.add_handler(CommandHandler("translate", self.translate_command))
         self.app.add_handler(CommandHandler("cancel", self.cancel))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_message))
         self.app.add_handler(MessageHandler(filters.LOCATION, self.location_message))
@@ -127,9 +130,22 @@ class DreamBotHandle(BaseTelegramHandle):
         """/help"""
         if not update.message:
             return
-        await update.message.reply_text(
-            "Sorry! The developers of the bot did not leave help message"
+        help_text = (
+            "🤖 <b>DreamBot Commands</b>\n\n"
+            "<b>/start</b> — First enter and get hello message\n"
+            "<b>/help</b> — Show this help message\n"
+            "<b>/location</b> — Get your last shared location\n"
+            "<b>/weather</b> — Get weather forecast based on your last shared location\n"
+            "<b>/weibo</b> — Weibo commands:\n"
+            "  • <code>/weibo login</code> — Bind Weibo account by QR code\n"
+            "  • <code>/weibo hot</code> — Show Weibo hot search list\n"
+            "  • <code>/weibo &lt;url&gt;</code> — Fetch a Weibo post\n"
+            "<b>/translate</b> — Translate text between English and Chinese (auto detect)\n"
+            "<b>/cancel</b> — Cancel the current operation\n\n"
+            "💡 Send me a <b>location</b> to save it for weather queries.\n"
+            "💬 Send any <b>text message</b> for AI-powered reply."
         )
+        await update.message.reply_html(help_text)
 
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
@@ -143,6 +159,7 @@ class DreamBotHandle(BaseTelegramHandle):
             BotCommand("location", "Get your last shared location"),
             BotCommand("weather", "Get weather information based on your last shared location"),
             BotCommand("weibo", "Weibo commands (e.g. /weibo login to bind account by QR)"),
+            BotCommand("translate", "Translate text between English and Chinese, auto detect language"),
             BotCommand("cancel", "Cancel the current operation"),
         ]
         for scope_cls in (
@@ -698,3 +715,26 @@ class DreamBotHandle(BaseTelegramHandle):
             self.ctx.logger.exception("weibo detail: reply_media_group failed")
             fallback = (text + "\n\n" if text else "") + "\n".join(photos)
             await update.message.reply_text(fallback)
+
+    async def translate_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/translate <text>"""
+        if not update.message:
+            return
+        args = context.args or []
+        if not args:
+            await update.message.reply_text("Usage: /translate <text>")
+            return
+        text = " ".join(args)
+        try:
+            source_language = "zh-CN" if re.search(r"[\u4e00-\u9fff]", text) else "en"
+            target = "zh-CN" if source_language == "en" else "en"
+            translator = GoogleTranslator(
+                source=source_language,
+                target=target,
+            )
+            reply_text =  await asyncio.to_thread(translator.translate, text)
+        except Exception as exc:
+            self.ctx.logger.exception("translate command failed")
+            await update.message.reply_text(f"Translate failed: {exc}")
+            return
+        await update.message.reply_text(reply_text)
